@@ -35,6 +35,35 @@ def write_source_templates(source_root: Path) -> None:
         path.write_text('command: ["python", "-m", "scripts.start_app"]\nenv: []\n', encoding="utf-8")
 
 
+def field_eng_state(storetime_url: str | None = None) -> dict:
+    return {
+        "target": "field_eng",
+        "presenter_app_id": "field-eng-presenter-id",
+        "presenter_app_url": "https://gurary-bobabricks-store-ops-1444828305810485.aws.databricksapps.com",
+        "presenter_service_principal_client_id": "field-eng-presenter-client-id",
+        "storetime_app_id": "field-eng-storetime-id",
+        "storetime_service_principal_client_id": "field-eng-storetime-client-id",
+        "opstask_app_id": "field-eng-opstask-id",
+        "opstask_service_principal_client_id": "field-eng-opstask-client-id",
+        "warehouse_id": "field-eng-warehouse-id",
+        "genie_space_id": "field-eng-genie-id",
+        "storetime_mcp_url": storetime_url
+        or "https://gurary-bobabricks-storetime-mcp-1444828305810485.aws.databricksapps.com/mcp",
+        "opstask_mcp_url": "https://gurary-bobabricks-opstask-mcp-1444828305810485.aws.databricksapps.com/mcp",
+        "mlflow_experiment_name": "/Shared/gurary-bobabricks-store-ops-uc",
+        "lakebase": {
+            "validated": True,
+            "enabled": True,
+            "project": "gurary-bobabricks",
+            "branch": "production",
+            "endpoint": "primary",
+            "database": "databricks_postgres",
+            "host": "field-eng-lakebase.database.databricks.com",
+            "schema": "gurary_bobabricks_app",
+        },
+    }
+
+
 class DeploymentRenderTest(unittest.TestCase):
     def test_renders_each_target_and_state_without_mutating_source(self):
         status_before = subprocess.run(
@@ -47,27 +76,7 @@ class DeploymentRenderTest(unittest.TestCase):
             state_root.mkdir()
             (state_root / "field_eng.json").write_text(
                 json.dumps(
-                    {
-                        "target": "field_eng",
-                        "warehouse_id": "field-eng-warehouse-id",
-                        "genie_space_id": "field-eng-genie-id",
-                        "storetime_mcp_url": (
-                            "https://gurary-bobabricks-storetime-mcp-"
-                            "1444828305810485.aws.databricksapps.com/mcp"
-                        ),
-                        "opstask_mcp_url": (
-                            "https://gurary-bobabricks-opstask-mcp-"
-                            "1444828305810485.aws.databricksapps.com/mcp"
-                        ),
-                        "lakebase": {
-                            "validated": True,
-                            "project": "gurary-bobabricks",
-                            "branch": "production",
-                            "endpoint": "primary",
-                            "database": "databricks_postgres",
-                            "schema": "gurary_bobabricks_app",
-                        },
-                    }
+                    field_eng_state()
                 ),
                 encoding="utf-8",
             )
@@ -236,6 +245,80 @@ class DeploymentRenderTest(unittest.TestCase):
                     stop_reading.set()
                     reader.join()
                 self.assertEqual(missing_path_observed, [])
+
+    def test_migrates_legacy_directory_and_replaces_its_pointer_atomically(self):
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            temporary_root = Path(temporary_directory)
+            build_root = temporary_root / "build"
+            legacy_path = build_root / "fevm" / "baseline"
+            legacy_path.mkdir(parents=True)
+            (legacy_path / "app.yaml").write_text("legacy complete tree", encoding="utf-8")
+            with patch("deploy.render.BUILD_ROOT", build_root), patch(
+                "deploy.render.STATE_ROOT", temporary_root / "state"
+            ):
+                migrated = render_deployment("fevm", "baseline")
+                self.assertTrue(migrated.is_symlink())
+                self.assertEqual((migrated / "app.yaml").read_text(encoding="utf-8").splitlines()[0], "command:")
+                versions = migrated.parent / ".versions"
+                self.assertIn("legacy complete tree", [path.read_text(encoding="utf-8") for path in versions.rglob("app.yaml")])
+                previous_target = migrated.readlink()
+                render_deployment("fevm", "baseline")
+                self.assertNotEqual(migrated.readlink(), previous_target)
+
+    def test_generated_state_must_be_complete_and_urls_exact(self):
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            temporary_root = Path(temporary_directory)
+            state_root = temporary_root / "state"
+            state_root.mkdir()
+            with patch("deploy.render.BUILD_ROOT", temporary_root / "build"), patch(
+                "deploy.render.STATE_ROOT", state_root
+            ):
+                for state in (
+                    {"target": "field_eng"},
+                    field_eng_state(field_eng_state()["storetime_mcp_url"] + "?unsafe=true"),
+                    field_eng_state(field_eng_state()["storetime_mcp_url"] + "#unsafe"),
+                ):
+                    (state_root / "field_eng.json").write_text(json.dumps(state), encoding="utf-8")
+                    with self.assertRaises(ValueError):
+                        render_deployment("field_eng", "baseline")
+
+    def test_preserves_copied_source_and_supports_fevm_memory_outcomes(self):
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            temporary_root = Path(temporary_directory)
+            state_root = temporary_root / "state"
+            state_root.mkdir()
+            disabled = {
+                "target": "fevm",
+                "mlflow_experiment_name": "/Shared/gurary-bobabricks-store-ops-uc",
+                "lakebase": {"validated": True, "enabled": False, "schema": "gurary_bobabricks_app"},
+            }
+            enabled = {
+                "target": "fevm",
+                "mlflow_experiment_name": "/Shared/gurary-bobabricks-store-ops-uc",
+                "lakebase": {
+                    "validated": True,
+                    "enabled": True,
+                    "project": "existing-fevm-project",
+                    "branch": "production",
+                    "endpoint": "primary",
+                    "database": "databricks_postgres",
+                    "host": "fevm-lakebase.database.databricks.com",
+                    "schema": "gurary_bobabricks_app",
+                },
+            }
+            with patch("deploy.render.BUILD_ROOT", temporary_root / "build"), patch(
+                "deploy.render.STATE_ROOT", state_root
+            ):
+                (state_root / "fevm.json").write_text(json.dumps(disabled), encoding="utf-8")
+                disabled_build = render_deployment("fevm", "baseline")
+                self.assertEqual(manifest_env(disabled_build / "app.yaml")["BOBABRICKS_DISABLE_LAKEBASE"], "1")
+                (state_root / "fevm.json").write_text(json.dumps(enabled), encoding="utf-8")
+                enabled_build = render_deployment("fevm", "baseline")
+                enabled_env = manifest_env(enabled_build / "app.yaml")
+                self.assertEqual(enabled_env["LAKEBASE_HOST"], "fevm-lakebase.database.databricks.com")
+                self.assertNotIn("BOBABRICKS_DISABLE_LAKEBASE", enabled_env)
+                for relative_path in ("deploy/safety.py", "agent_server/agent.py"):
+                    self.assertEqual((enabled_build / relative_path).read_bytes(), (ROOT / relative_path).read_bytes())
 
 
 if __name__ == "__main__":

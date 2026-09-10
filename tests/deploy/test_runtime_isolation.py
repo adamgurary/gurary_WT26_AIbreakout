@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import ast
+import contextlib
 import importlib.util
+import io
 import os
 import sys
 import unittest
@@ -90,6 +92,13 @@ class FakeAsyncExitStack:
         return context
 
 
+class FakeSdkMcpServer:
+    def __init__(self, *, url, name, workspace_client):
+        self.url = url
+        self.name = name
+        self.workspace_client = workspace_client
+
+
 class RuntimeToolIsolationTest(unittest.IsolatedAsyncioTestCase):
     def test_fevm_read_only_filters_only_opstask_write(self):
         tools = [{"name": "list_existing_ops_tasks"}, {"name": "create_ops_task"}]
@@ -114,13 +123,38 @@ class RuntimeToolIsolationTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual([tool.name for tool in tools], ["inspect_schedule", "list_existing_ops_tasks"])
         self.assertEqual(unavailable, [])
 
+    def test_fevm_sdk_path_omits_raw_opstask_server(self):
+        with patch.dict(os.environ, {"SHARED_MCP_READ_ONLY": "true"}), patch.object(
+            agent, "USE_SDK_MCP_SERVERS", True
+        ), patch.object(agent, "McpServer", FakeSdkMcpServer):
+            servers = agent.build_mcp_servers(object())
+
+        self.assertEqual([server.name for server in servers], ["bobabricks_genie", "storetime"])
+
+    def test_field_eng_sdk_path_keeps_raw_opstask_server(self):
+        with patch.dict(os.environ, {"SHARED_MCP_READ_ONLY": "false"}), patch.object(
+            agent, "USE_SDK_MCP_SERVERS", True
+        ), patch.object(agent, "McpServer", FakeSdkMcpServer):
+            servers = agent.build_mcp_servers(object())
+
+        self.assertEqual(
+            [server.name for server in servers],
+            ["bobabricks_genie", "storetime", "opstask"],
+        )
+
     def test_generated_instructions_match_runtime_write_policy(self):
         with patch.dict(os.environ, {"SHARED_MCP_READ_ONLY": "true"}):
-            read_only = agent.create_agent().instructions
+            read_only = agent.create_agent(context_tools_enabled=True).instructions
+        normalized_read_only = " ".join(read_only.split())
         self.assertIn("inspect follow-ups", read_only)
         self.assertIn("cannot create tasks", read_only)
+        self.assertIn("Never create an OpsTask", normalized_read_only)
         self.assertNotIn("create tasks after approval", read_only)
         self.assertNotIn("task creation tools", read_only)
+        self.assertNotIn(
+            "unless the user explicitly asks to create a follow-up task",
+            normalized_read_only,
+        )
 
         with patch.dict(os.environ, {"SHARED_MCP_READ_ONLY": "false"}):
             writable = agent.create_agent().instructions
@@ -178,12 +212,15 @@ class ProvisioningIsolationTest(unittest.TestCase):
                     helper(namespace, prefix, table)
 
     def test_cli_rejects_empty_prefix_before_any_sql(self):
+        stderr = io.StringIO()
         with patch.object(sys, "argv", ["provision_databricks_assets.py"]), patch.object(
             provision, "execute_sql"
         ) as execute_sql:
-            with self.assertRaises(SystemExit):
-                provision.main()
+            with contextlib.redirect_stderr(stderr):
+                with self.assertRaisesRegex(SystemExit, "2"):
+                    provision.main()
         execute_sql.assert_not_called()
+        self.assertIn("--table-prefix must be non-empty", stderr.getvalue())
 
     def test_private_cli_plan_replaces_only_prefixed_tables(self):
         statements = []
@@ -205,14 +242,16 @@ class ProvisioningIsolationTest(unittest.TestCase):
             "--table-prefix",
             PRIVATE_PREFIX,
         ]
-        with patch.object(sys, "argv", argv), patch.object(
-            provision, "execute_sql", side_effect=lambda _p, _w, sql: statements.append(sql) or {}
-        ), patch.object(
-            provision,
-            "build_seed_data",
-            return_value={"stores": (["store_id"], [(101,)])},
-        ), patch.object(provision, "insert_rows", side_effect=capture_insert):
-            provision.main()
+        stdout = io.StringIO()
+        with contextlib.redirect_stdout(stdout):
+            with patch.object(sys, "argv", argv), patch.object(
+                provision, "execute_sql", side_effect=lambda _p, _w, sql: statements.append(sql) or {}
+            ), patch.object(
+                provision,
+                "build_seed_data",
+                return_value={"stores": (["store_id"], [(101,)])},
+            ), patch.object(provision, "insert_rows", side_effect=capture_insert):
+                provision.main()
 
         table_ddl = [statement for statement in statements if " TABLE " in statement]
         self.assertTrue(table_ddl)
@@ -233,16 +272,23 @@ class ProvisioningIsolationTest(unittest.TestCase):
             self.assertIn(
                 f"{PRIVATE_NAMESPACE}.{PRIVATE_PREFIX}{table}", final_insert
             )
+        self.assertEqual(
+            stdout.getvalue(),
+            f"Provisioned Bobabricks store-ops data in {PRIVATE_NAMESPACE} "
+            f"with prefix {PRIVATE_PREFIX!r}\n",
+        )
 
     def test_allow_shared_source_is_the_only_empty_prefix_escape_hatch(self):
         statements = []
         argv = ["provision_databricks_assets.py", "--allow-shared-source"]
-        with patch.object(sys, "argv", argv), patch.object(
-            provision, "execute_sql", side_effect=lambda _p, _w, sql: statements.append(sql) or {}
-        ), patch.object(provision, "build_seed_data", return_value={}), patch.object(
-            provision, "insert_rows"
-        ):
-            provision.main()
+        stdout = io.StringIO()
+        with contextlib.redirect_stdout(stdout):
+            with patch.object(sys, "argv", argv), patch.object(
+                provision, "execute_sql", side_effect=lambda _p, _w, sql: statements.append(sql) or {}
+            ), patch.object(provision, "build_seed_data", return_value={}), patch.object(
+                provision, "insert_rows"
+            ):
+                provision.main()
 
         self.assertFalse(any("DROP TABLE" in statement for statement in statements))
         self.assertTrue(
@@ -250,6 +296,11 @@ class ProvisioningIsolationTest(unittest.TestCase):
                 f"CREATE OR REPLACE TABLE {SHARED_CATALOG}.{SHARED_SCHEMA}.stores" in statement
                 for statement in statements
             )
+        )
+        self.assertEqual(
+            stdout.getvalue(),
+            f"Provisioned Bobabricks store-ops data in {SHARED_CATALOG}.{SHARED_SCHEMA} "
+            "with prefix ''\n",
         )
 
 

@@ -184,6 +184,11 @@ def _runtime_instructions(instructions: str) -> str:
             "for explicit approval before calling a create/write tool.",
             "OpsTask is inspection-only in this runtime and cannot create follow-up tasks.",
         )
+        .replace(
+            "Do not create an OpsTask or ask for approval in this short demo flow unless\n"
+            "  the user explicitly asks to create a follow-up task.",
+            "Never create an OpsTask or ask for approval in this inspection-only runtime.",
+        )
     )
 
 AGENT_INSTRUCTIONS = """\
@@ -674,7 +679,13 @@ def build_mcp_servers(workspace_client: WorkspaceClient) -> list[McpServer]:
         return servers
     if STORETIME_MCP_URL:
         servers.append(McpServer(url=STORETIME_MCP_URL, name="storetime", workspace_client=workspace_client))
-    if OPSTASK_MCP_URL:
+    # SDK MCP servers are attached atomically, without per-tool metadata
+    # filtering. Omit the entire raw OpsTask server whenever its write tool
+    # would be filtered from direct discovery.
+    sdk_opstask_metadata = filter_mcp_tool_metadata(
+        "opstask", [{"name": "create_ops_task"}]
+    )
+    if OPSTASK_MCP_URL and sdk_opstask_metadata:
         servers.append(McpServer(url=OPSTASK_MCP_URL, name="opstask", workspace_client=workspace_client))
     return servers
 

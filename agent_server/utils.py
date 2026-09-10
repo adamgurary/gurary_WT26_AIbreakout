@@ -58,11 +58,19 @@ def init_lakebase_config() -> LakebaseConfig:
     if instance_name:
         return LakebaseConfig(instance_name, None, None, None, memory_schema)
 
-    logger.warning("Lakebase is not configured; running without persistent session memory.")
     return LakebaseConfig(None, None, None, None, memory_schema)
 
 
 lakebase_config = init_lakebase_config()
+_lakebase_warning_emitted = False
+
+
+def warn_lakebase_unconfigured() -> None:
+    global _lakebase_warning_emitted
+    if lakebase_config.is_configured or _lakebase_warning_emitted:
+        return
+    _lakebase_warning_emitted = True
+    logger.warning("Lakebase is not configured; running without persistent session memory.")
 
 
 def get_databricks_host_from_env() -> str:

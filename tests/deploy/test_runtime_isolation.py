@@ -5,6 +5,7 @@ import contextlib
 import importlib.util
 import io
 import os
+import subprocess
 import sys
 import unittest
 from pathlib import Path
@@ -100,6 +101,38 @@ class FakeSdkMcpServer:
 
 
 class RuntimeToolIsolationTest(unittest.IsolatedAsyncioTestCase):
+    def test_utils_import_is_silent(self):
+        environment = {
+            key: value
+            for key, value in os.environ.items()
+            if not key.startswith("LAKEBASE_") and key != "BOBABRICKS_DISABLE_LAKEBASE"
+        }
+        result = subprocess.run(
+            [sys.executable, "-c", "import agent_server.utils"],
+            cwd=ROOT,
+            env=environment,
+            text=True,
+            capture_output=True,
+        )
+
+        self.assertEqual(result.returncode, 0)
+        self.assertEqual(result.stdout, "")
+        self.assertEqual(result.stderr, "")
+
+    def test_unconfigured_lakebase_is_diagnosed_when_session_requested(self):
+        with patch.dict(os.environ, {"BOBABRICKS_DISABLE_LAKEBASE": "0"}):
+            with self.assertLogs("agent_server.utils", level="WARNING") as captured:
+                session = agent.maybe_create_session("runtime-diagnostic")
+
+        self.assertIsNone(session)
+        self.assertEqual(
+            captured.output,
+            [
+                "WARNING:agent_server.utils:Lakebase is not configured; "
+                "running without persistent session memory."
+            ],
+        )
+
     def test_fevm_read_only_filters_only_opstask_write(self):
         tools = [{"name": "list_existing_ops_tasks"}, {"name": "create_ops_task"}]
         with patch.dict(os.environ, {"SHARED_MCP_READ_ONLY": "true"}):

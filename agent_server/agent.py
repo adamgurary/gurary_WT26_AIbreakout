@@ -25,6 +25,7 @@ from agent_server.utils import (
     lakebase_access_message,
     lakebase_config,
     process_agent_stream_events,
+    warn_lakebase_unconfigured,
 )
 
 set_default_openai_client(AsyncDatabricksOpenAI())
@@ -745,6 +746,7 @@ def maybe_create_session(session_id: str) -> AsyncDatabricksSession | None:
     if os.getenv("BOBABRICKS_DISABLE_LAKEBASE") == "1":
         return None
     if not lakebase_config.is_configured:
+        warn_lakebase_unconfigured()
         return None
     return AsyncDatabricksSession(
         session_id=session_id,

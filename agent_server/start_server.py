@@ -6,7 +6,12 @@ from databricks_ai_bridge.long_running import LongRunningAgentServer
 from databricks_openai.agents import AsyncDatabricksSession
 from mlflow.genai.agent_server import setup_mlflow_git_based_version_tracking
 
-from agent_server.utils import lakebase_access_message, lakebase_config, replace_fake_id
+from agent_server.utils import (
+    lakebase_access_message,
+    lakebase_config,
+    replace_fake_id,
+    warn_lakebase_unconfigured,
+)
 
 import agent_server.agent  # noqa: F401
 
@@ -15,7 +20,7 @@ logger = logging.getLogger(__name__)
 
 async def run_lakebase_session_setup() -> None:
     if not lakebase_config.is_configured:
-        logger.warning("Lakebase not configured; skipping session table setup.")
+        warn_lakebase_unconfigured()
         return
     session = AsyncDatabricksSession(
         session_id="__startup__",

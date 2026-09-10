@@ -144,6 +144,48 @@ CONFLUENCE_MCP_ENABLED = os.getenv("CONFLUENCE_MCP_ENABLED", "false").strip().lo
 USE_SDK_MCP_SERVERS = os.getenv("USE_SDK_MCP_SERVERS", "false").strip().lower() in {"1", "true", "on", "yes"}
 CONFLUENCE_FIXTURE_PATH = Path(__file__).resolve().parents[1] / "data" / "confluence_playbooks.json"
 
+
+def filter_mcp_tool_metadata(
+    server_name: str, tools: list[dict[str, Any]]
+) -> list[dict[str, Any]]:
+    read_only = os.getenv("SHARED_MCP_READ_ONLY", "false").strip().lower() in {
+        "1",
+        "true",
+        "yes",
+        "on",
+    }
+    if read_only and server_name == "opstask":
+        return [tool for tool in tools if tool.get("name") != "create_ops_task"]
+    return tools
+
+
+def _runtime_instructions(instructions: str) -> str:
+    if os.getenv("SHARED_MCP_READ_ONLY", "false").strip().lower() not in {
+        "1",
+        "true",
+        "yes",
+        "on",
+    }:
+        return instructions
+    return (
+        instructions.replace(
+            "- OpsTask for existing follow-up tickets and task tracking.",
+            "- OpsTask to inspect follow-ups; it cannot create tasks.",
+        )
+        .replace(
+            "Contains follow-up lookup and task\n"
+            "  creation tools; Can list follow-ups and create tasks after approval; Cannot\n"
+            "  create silently or diagnose root cause alone.",
+            "Contains follow-up lookup; Can inspect follow-ups; Cannot create tasks or\n"
+            "  diagnose root cause alone.",
+        )
+        .replace(
+            "If asked about OpsTask creation, describe what you would create and wait\n"
+            "for explicit approval before calling a create/write tool.",
+            "OpsTask is inspection-only in this runtime and cannot create follow-up tasks.",
+        )
+    )
+
 AGENT_INSTRUCTIONS = """\
 You are the Bobabricks Store Operations Agent for regional store leaders.
 
@@ -590,7 +632,9 @@ async def build_atlassian_tools(stack: AsyncExitStack) -> tuple[list[FunctionToo
         return [], [ATLASSIAN_FRIENDLY_NAME]
     try:
         client = await stack.enter_async_context(DirectMcpClient(url, token))
-        return [_make_confluence_search_tool(client, await client.list_tools())], []
+        metadata = await client.list_tools()
+        metadata = filter_mcp_tool_metadata("atlassian", metadata)
+        return [_make_confluence_search_tool(client, metadata)], []
     except Exception as exc:
         logger.warning("Atlassian MCP unavailable; running without it. (%s)", exc)
         return [], [ATLASSIAN_FRIENDLY_NAME]
@@ -613,7 +657,9 @@ async def build_direct_databricks_mcp_tools(stack: AsyncExitStack) -> tuple[list
             continue
         try:
             client = await stack.enter_async_context(DirectMcpClient(url, token))
-            tools.extend(_make_function_tool(client, meta) for meta in await client.list_tools())
+            metadata = await client.list_tools()
+            metadata = filter_mcp_tool_metadata(name, metadata)
+            tools.extend(_make_function_tool(client, meta) for meta in metadata)
         except Exception as exc:
             logger.warning("MCP server %r unavailable over direct transport; running without it. (%s)", name, exc)
             unavailable.append(MCP_FRIENDLY_NAMES.get(name, name))
@@ -665,9 +711,9 @@ async def close_tool_stack(stack: AsyncExitStack) -> None:
 
 
 def create_agent(mcp_servers=None, unavailable_tools=None, extra_tools=None, context_tools_enabled: bool = False) -> Agent:
-    instructions = AGENT_INSTRUCTIONS
+    instructions = _runtime_instructions(AGENT_INSTRUCTIONS)
     if context_tools_enabled:
-        instructions += CONTEXT_INSTRUCTIONS
+        instructions += _runtime_instructions(CONTEXT_INSTRUCTIONS)
     if unavailable_tools:
         names = ", ".join(sorted(set(unavailable_tools)))
         instructions += (

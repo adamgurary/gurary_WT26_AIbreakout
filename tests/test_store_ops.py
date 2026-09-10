@@ -42,6 +42,14 @@ class StoreOpsEngineTest(unittest.TestCase):
         self.assertIn("StoreTime", tool_status)
         self.assertIn("OpsTask", tool_status)
 
+    def test_field_eng_opstask_status_keeps_approval_gate_visible(self):
+        status = {row["tool"]: row for row in self.engine.tool_status()}
+
+        self.assertEqual(
+            status["OpsTask"]["purpose"],
+            "list follow-up tickets; create only after approval",
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

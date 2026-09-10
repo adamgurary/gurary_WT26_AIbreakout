@@ -30,7 +30,8 @@ class DatabricksTableClient:
     def table_name(name: str) -> str:
         catalog = os.getenv("DATABRICKS_CATALOG", "bobabricks_demo")
         schema = os.getenv("DATABRICKS_SCHEMA", "store_ops")
-        return f"{catalog}.{schema}.{name}"
+        prefix = os.getenv("DATABRICKS_TABLE_PREFIX", "")
+        return f"{catalog}.{schema}.{prefix}{name}"
 
     def query(self, statement: str, parameters: dict[str, Any] | None = None) -> list[dict[str, Any]]:
         response = self.workspace.api_client.do(

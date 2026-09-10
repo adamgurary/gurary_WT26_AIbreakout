@@ -255,7 +255,11 @@ class StoreOpsEngine:
         tools = [
             {"tool": "Genie Agent", "status": "configured", "purpose": "governed store metrics"},
             {"tool": "StoreTime", "status": "configured", "purpose": "schedules and training conversion"},
-            {"tool": "OpsTask", "status": "configured", "purpose": "list follow-up tickets"},
+            {
+                "tool": "OpsTask",
+                "status": "configured",
+                "purpose": "list follow-up tickets; create only after approval",
+            },
         ]
         if os.getenv("CONFLUENCE_MCP_ENABLED", "false").strip().lower() in {"1", "true", "on", "yes"}:
             tools.append(

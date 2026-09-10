@@ -25,6 +25,7 @@ OPSTASK_MCP_URL = os.environ.get(
 DATABRICKS_WAREHOUSE_ID = os.environ.get("DATABRICKS_WAREHOUSE_ID", "88fd32ee6d9438ac").strip()
 DATABRICKS_CATALOG = os.environ.get("DATABRICKS_CATALOG", "bobabricks_demo").strip()
 DATABRICKS_SCHEMA = os.environ.get("DATABRICKS_SCHEMA", "store_ops").strip()
+DATABRICKS_TABLE_PREFIX = os.environ.get("DATABRICKS_TABLE_PREFIX", "").strip()
 CONFLUENCE_MCP_ENABLED = os.environ.get("CONFLUENCE_MCP_ENABLED", "false").strip().lower() in {"1", "true", "on", "yes"}
 ATLASSIAN_MCP_URL = os.environ.get("ATLASSIAN_MCP_URL", "").strip()
 
@@ -178,7 +179,7 @@ class DatabricksSqlResourceClient:
 
     @staticmethod
     def table(name: str) -> str:
-        return f"{DATABRICKS_CATALOG}.{DATABRICKS_SCHEMA}.{name}"
+        return f"{DATABRICKS_CATALOG}.{DATABRICKS_SCHEMA}.{DATABRICKS_TABLE_PREFIX}{name}"
 
     def query(self, statement: str, parameters: dict | None = None) -> list[dict]:
         response = self.workspace.api_client.do(

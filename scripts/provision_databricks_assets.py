@@ -5,12 +5,30 @@ import argparse
 import datetime as dt
 import json
 import random
+import re
 import subprocess
 import time
 from pathlib import Path
 from typing import Iterable
 
 ROOT = Path(__file__).resolve().parents[1]
+IDENTIFIER = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
+
+
+def qualified_table(namespace: str, prefix: str, table: str) -> str:
+    namespace_parts = namespace.split(".")
+    if len(namespace_parts) != 2 or any(
+        not IDENTIFIER.fullmatch(part) for part in namespace_parts
+    ):
+        raise ValueError(f"Invalid table namespace: {namespace!r}")
+    if prefix and not IDENTIFIER.fullmatch(prefix):
+        raise ValueError(f"Invalid table prefix: {prefix!r}")
+    if not IDENTIFIER.fullmatch(table):
+        raise ValueError(f"Invalid table name: {table!r}")
+    qualified_name = f"{prefix}{table}"
+    if not IDENTIFIER.fullmatch(qualified_name):
+        raise ValueError(f"Invalid qualified table name: {qualified_name!r}")
+    return f"{namespace}.{qualified_name}"
 
 
 def run_databricks(profile: str, args: list[str], payload: dict | None = None) -> dict:
@@ -200,12 +218,14 @@ def main() -> None:
     parser.add_argument("--warehouse-id", default="88fd32ee6d9438ac")
     parser.add_argument("--catalog", default="bobabricks_demo")
     parser.add_argument("--schema", default="store_ops")
+    parser.add_argument("--table-prefix", default="")
+    parser.add_argument("--allow-shared-source", action="store_true")
     args = parser.parse_args()
 
-    namespace = f"{args.catalog}.{args.schema}"
-    execute_sql(args.profile, args.warehouse_id, f"CREATE CATALOG IF NOT EXISTS {args.catalog}")
-    execute_sql(args.profile, args.warehouse_id, f"CREATE SCHEMA IF NOT EXISTS {namespace} COMMENT 'Bobabricks store operations demo data for Genie, StoreTime, Inventory, and OpsTask capabilities'")
+    if not args.table_prefix and not args.allow_shared_source:
+        parser.error("--table-prefix must be non-empty unless --allow-shared-source is set")
 
+    namespace = f"{args.catalog}.{args.schema}"
     ddl = {
         "store_metrics": """region STRING, store_id STRING, store_name STRING, sales_vs_plan_pct DOUBLE, training_completion_pct DOUBLE, avg_wait_minutes DOUBLE, customer_satisfaction DOUBLE""",
         "stores": """store_id INT, store_name STRING, region STRING, district STRING, city STRING, state STRING, area_leader STRING, opened_date DATE, seat_count INT, weekly_sales_target DOUBLE""",
@@ -220,29 +240,34 @@ def main() -> None:
         "customer_feedback": """feedback_id STRING, store_id INT, feedback_date DATE, topic STRING, rating INT, comment_summary STRING""",
         "ops_tasks": """task_id STRING, store_id INT, title STRING, description STRING, category STRING, severity STRING, status STRING, created_date DATE, owner STRING""",
     }
+    table_names = {
+        table: qualified_table(namespace, args.table_prefix, table) for table in ddl
+    }
+
+    execute_sql(args.profile, args.warehouse_id, f"CREATE CATALOG IF NOT EXISTS {args.catalog}")
+    execute_sql(args.profile, args.warehouse_id, f"CREATE SCHEMA IF NOT EXISTS {namespace} COMMENT 'Bobabricks store operations demo data for Genie, StoreTime, Inventory, and OpsTask capabilities'")
 
     for table, columns in ddl.items():
-        execute_sql(args.profile, args.warehouse_id, f"DROP TABLE IF EXISTS {namespace}.{table}")
-        execute_sql(args.profile, args.warehouse_id, f"CREATE TABLE {namespace}.{table} ({columns}) USING DELTA COMMENT 'Bobabricks {table.replace('_', ' ')} demo table'")
+        execute_sql(args.profile, args.warehouse_id, f"CREATE OR REPLACE TABLE {table_names[table]} ({columns}) USING DELTA COMMENT 'Bobabricks {table.replace('_', ' ')} demo table'")
 
     data = build_seed_data()
     for table, (columns, rows) in data.items():
-        insert_rows(args.profile, args.warehouse_id, f"{namespace}.{table}", columns, rows)
+        insert_rows(args.profile, args.warehouse_id, table_names[table], columns, rows)
 
     execute_sql(
         args.profile,
         args.warehouse_id,
         f"""
-        INSERT INTO {namespace}.store_metrics
+        INSERT INTO {table_names['store_metrics']}
         SELECT s.region, CAST(s.store_id AS STRING), s.store_name, m.sales_vs_plan_pct,
                m.training_completion_pct, m.avg_wait_minutes, m.customer_satisfaction
-        FROM {namespace}.store_weekly_metrics m
-        JOIN {namespace}.stores s ON m.store_id = s.store_id
-        WHERE m.week_start_date = (SELECT max(week_start_date) FROM {namespace}.store_weekly_metrics)
+        FROM {table_names['store_weekly_metrics']} m
+        JOIN {table_names['stores']} s ON m.store_id = s.store_id
+        WHERE m.week_start_date = (SELECT max(week_start_date) FROM {table_names['store_weekly_metrics']})
         """,
     )
 
-    print(f"Provisioned Bobabricks store-ops data in {namespace}")
+    print(f"Provisioned Bobabricks store-ops data in {namespace} with prefix {args.table_prefix!r}")
 
 
 if __name__ == "__main__":

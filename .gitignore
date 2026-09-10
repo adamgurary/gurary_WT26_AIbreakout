@@ -7,3 +7,6 @@ venv/
 env/
 .env.databricks.local
 .databricks/
+.build/
+deploy/state/
+deploy/inventory/live-*.json

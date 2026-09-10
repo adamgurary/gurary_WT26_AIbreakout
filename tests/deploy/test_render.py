@@ -251,6 +251,40 @@ class DeploymentRenderTest(unittest.TestCase):
                         render_deployment("fevm", "baseline")
                 unsafe_file.unlink()
 
+    def test_rejects_new_forbidden_occurrence_in_safe_reference_files(self):
+        for relative_path in ("README.md", "deploy/render.py", "tests/deploy/test_render.py"):
+            with self.subTest(path=relative_path), tempfile.TemporaryDirectory() as temporary_directory:
+                temporary_root = Path(temporary_directory)
+                source_root = temporary_root / "source"
+                source_root.mkdir()
+                write_source_templates(source_root)
+                unsafe_file = source_root / relative_path
+                unsafe_file.parent.mkdir(parents=True, exist_ok=True)
+                unsafe_file.write_text(
+                    "ACTIVE_APP_NAME=bobabricks-store-ops-demo\n", encoding="utf-8"
+                )
+                with patch("deploy.render.ROOT", source_root), patch(
+                    "deploy.render.BUILD_ROOT", temporary_root / "build"
+                ), patch("deploy.render.STATE_ROOT", temporary_root / "state"):
+                    with self.assertRaises(ValueError):
+                        render_deployment("fevm", "baseline")
+
+    def test_rejects_duplicate_of_bounded_safe_reference_occurrence(self):
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            temporary_root = Path(temporary_directory)
+            source_root = temporary_root / "source"
+            source_root.mkdir()
+            write_source_templates(source_root)
+            renderer = source_root / "deploy" / "render.py"
+            renderer.parent.mkdir(parents=True)
+            allowed_guard_line = '    "bobabricks-store-ops-demo",\n'
+            renderer.write_text(allowed_guard_line * 2, encoding="utf-8")
+            with patch("deploy.render.ROOT", source_root), patch(
+                "deploy.render.BUILD_ROOT", temporary_root / "build"
+            ), patch("deploy.render.STATE_ROOT", temporary_root / "state"):
+                with self.assertRaises(ValueError):
+                    render_deployment("fevm", "baseline")
+
     def test_replaces_build_pointer_without_a_missing_path(self):
         with tempfile.TemporaryDirectory() as temporary_directory:
             temporary_root = Path(temporary_directory)

@@ -50,7 +50,15 @@ _SAFE_REFERENCE_FILES = {
         "mcp-apps/opstask/databricks.yml", "mcp-apps/storetime/databricks.yml", "scripts/render_deployment.py",
     )
 }
-_SAFE_REFERENCE_PREFIXES = (Path("archive"), Path("deploy"), Path("tests"))
+_SAFE_REFERENCE_FILES |= {
+    Path("archive/long-version/BOBABRICKS_DEMO_RUNBOOK.md"),
+    Path("deploy/render.py"),
+    Path("deploy/safety.py"),
+    Path("deploy/targets/fevm.yaml"),
+    Path("deploy/targets/field_eng.yaml"),
+    Path("tests/deploy/test_config.py"),
+    Path("tests/deploy/test_render.py"),
+}
 _RUNTIME_REFERENCE_FILES = {
     Path(path) for path in (
         "agent-store-ops/mcp_servers.yaml", "agent_server/agent.py", "app/app.py",
@@ -58,6 +66,9 @@ _RUNTIME_REFERENCE_FILES = {
         "scripts/provision_databricks_assets.py", "scripts/start_app.py",
     )
 }
+_LAKEBASE_HOST = re.compile(
+    r"[a-z0-9](?:[a-z0-9-]*[a-z0-9])?\.database(?:\.[a-z0-9-]+)*\.databricks\.com"
+)
 
 
 def _require_string(value: Any, field: str) -> str:
@@ -113,16 +124,27 @@ def _validate_lakebase(target: TargetConfig, lakebase: Any) -> dict[str, Any]:
         raise ValueError("Generated Lakebase state must be a validated object")
     disabled = {"validated", "enabled", "schema"}
     enabled = disabled | {"project", "branch", "endpoint", "database", "host"}
+    if target.key == "fevm":
+        enabled |= {"workspace_id", "workspace_host"}
     if lakebase.get("enabled") is False:
         if set(lakebase) != disabled or lakebase["schema"] != "gurary_bobabricks_app":
             raise ValueError("Disabled Lakebase state must name only the isolated schema")
         return lakebase
     if lakebase.get("enabled") is not True or set(lakebase) != enabled:
         raise ValueError("Enabled Lakebase state must be complete")
-    for field in ("project", "branch", "endpoint", "database", "host", "schema"):
-        _require_string(lakebase[field], f"lakebase.{field}")
+    for field in ("project", "branch", "endpoint", "database", "schema"):
+        _require_identifier(lakebase[field], f"lakebase.{field}")
     if lakebase["schema"] != "gurary_bobabricks_app":
         raise ValueError("Lakebase state must use the isolated schema")
+    host = _require_string(lakebase["host"], "lakebase.host")
+    if not _LAKEBASE_HOST.fullmatch(host):
+        raise ValueError("Lakebase host is not a valid Lakebase hostname")
+    if target.key == "fevm":
+        if (
+            lakebase["workspace_id"] != target.workspace_id
+            or lakebase["workspace_host"] != target.host
+        ):
+            raise ValueError("FEVM Lakebase state is not target-affine")
     if target.key == "field_eng":
         expected = {
             "project": target.lakebase_project, "branch": target.lakebase_branch,
@@ -273,7 +295,7 @@ def _all_declared_identifiers() -> set[str]:
 
 
 def _is_safe_reference(relative: Path, identifier: str) -> bool:
-    if relative in _SAFE_REFERENCE_FILES or any(relative.is_relative_to(prefix) for prefix in _SAFE_REFERENCE_PREFIXES):
+    if relative in _SAFE_REFERENCE_FILES:
         return True
     return relative in _RUNTIME_REFERENCE_FILES and identifier not in _AMBER_IDENTIFIERS and identifier in _all_declared_identifiers()
 

@@ -64,6 +64,25 @@ def field_eng_state(storetime_url: str | None = None) -> dict:
     }
 
 
+def enabled_fevm_state() -> dict:
+    return {
+        "target": "fevm",
+        "mlflow_experiment_name": "/Shared/gurary-bobabricks-store-ops-uc",
+        "lakebase": {
+            "validated": True,
+            "enabled": True,
+            "workspace_id": "7474657163903557",
+            "workspace_host": "https://fevm-worldtour-ai.cloud.databricks.com",
+            "project": "existing-fevm-project",
+            "branch": "production",
+            "endpoint": "primary",
+            "database": "databricks_postgres",
+            "host": "fevm-lakebase.database.databricks.com",
+            "schema": "gurary_bobabricks_app",
+        },
+    }
+
+
 class DeploymentRenderTest(unittest.TestCase):
     def test_renders_each_target_and_state_without_mutating_source(self):
         status_before = subprocess.run(
@@ -219,6 +238,18 @@ class DeploymentRenderTest(unittest.TestCase):
                 with self.assertRaises(ValueError):
                     render_deployment("fevm", "baseline")
 
+            (source_root / "linked.txt").unlink()
+            for relative_path in ("deploy/unsafe.txt", "tests/unsafe.txt"):
+                unsafe_file = source_root / relative_path
+                unsafe_file.parent.mkdir(parents=True, exist_ok=True)
+                unsafe_file.write_text("bobabricks-store-ops-demo", encoding="utf-8")
+                with patch("deploy.render.ROOT", source_root), patch(
+                    "deploy.render.BUILD_ROOT", build_root
+                ), patch("deploy.render.STATE_ROOT", state_root):
+                    with self.assertRaises(ValueError):
+                        render_deployment("fevm", "baseline")
+                unsafe_file.unlink()
+
     def test_replaces_build_pointer_without_a_missing_path(self):
         with tempfile.TemporaryDirectory() as temporary_directory:
             temporary_root = Path(temporary_directory)
@@ -292,20 +323,7 @@ class DeploymentRenderTest(unittest.TestCase):
                 "mlflow_experiment_name": "/Shared/gurary-bobabricks-store-ops-uc",
                 "lakebase": {"validated": True, "enabled": False, "schema": "gurary_bobabricks_app"},
             }
-            enabled = {
-                "target": "fevm",
-                "mlflow_experiment_name": "/Shared/gurary-bobabricks-store-ops-uc",
-                "lakebase": {
-                    "validated": True,
-                    "enabled": True,
-                    "project": "existing-fevm-project",
-                    "branch": "production",
-                    "endpoint": "primary",
-                    "database": "databricks_postgres",
-                    "host": "fevm-lakebase.database.databricks.com",
-                    "schema": "gurary_bobabricks_app",
-                },
-            }
+            enabled = enabled_fevm_state()
             with patch("deploy.render.BUILD_ROOT", temporary_root / "build"), patch(
                 "deploy.render.STATE_ROOT", state_root
             ):
@@ -317,8 +335,46 @@ class DeploymentRenderTest(unittest.TestCase):
                 enabled_env = manifest_env(enabled_build / "app.yaml")
                 self.assertEqual(enabled_env["LAKEBASE_HOST"], "fevm-lakebase.database.databricks.com")
                 self.assertNotIn("BOBABRICKS_DISABLE_LAKEBASE", enabled_env)
-                for relative_path in ("deploy/safety.py", "agent_server/agent.py"):
+                for relative_path in (
+                    "deploy/safety.py",
+                    "deploy/render.py",
+                    "agent_server/agent.py",
+                    "tests/deploy/test_render.py",
+                ):
                     self.assertEqual((enabled_build / relative_path).read_bytes(), (ROOT / relative_path).read_bytes())
+
+    def test_enabled_fevm_lakebase_must_be_complete_and_target_affine(self):
+        invalid_lakebases = []
+        for field, value in (
+            ("workspace_id", "1444828305810485"),
+            ("workspace_host", "https://e2-demo-field-eng.cloud.databricks.com"),
+            ("project", "../escape"),
+            ("branch", "bad branch"),
+            ("endpoint", "https://endpoint"),
+            ("database", "database/name"),
+            ("host", "https://attacker.example"),
+        ):
+            state = enabled_fevm_state()
+            state["lakebase"][field] = value
+            invalid_lakebases.append(state)
+        missing_workspace = enabled_fevm_state()
+        del missing_workspace["lakebase"]["workspace_id"]
+        invalid_lakebases.append(missing_workspace)
+        extra_field = enabled_fevm_state()
+        extra_field["lakebase"]["unexpected"] = "value"
+        invalid_lakebases.append(extra_field)
+
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            temporary_root = Path(temporary_directory)
+            state_root = temporary_root / "state"
+            state_root.mkdir()
+            with patch("deploy.render.BUILD_ROOT", temporary_root / "build"), patch(
+                "deploy.render.STATE_ROOT", state_root
+            ):
+                for state in invalid_lakebases:
+                    (state_root / "fevm.json").write_text(json.dumps(state), encoding="utf-8")
+                    with self.assertRaises(ValueError):
+                        render_deployment("fevm", "baseline")
 
 
 if __name__ == "__main__":

@@ -348,6 +348,8 @@ def _install_pointer(destination: Path, target_root: Path, version_path: Path) -
     if destination.exists() and not destination.is_symlink():
         _atomic_swap(destination, temporary_link)
         os.replace(temporary_link, version_path.parent / f"legacy-{destination.name}-{uuid4().hex}")
+    elif destination.is_symlink():
+        _atomic_swap(destination, temporary_link)
     else:
         os.replace(temporary_link, destination)
 

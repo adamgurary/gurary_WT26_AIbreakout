@@ -9,6 +9,7 @@ from unittest.mock import patch
 import yaml
 
 from deploy.config import load_target
+from deploy import render
 from deploy.render import render_deployment
 
 
@@ -258,6 +259,11 @@ class DeploymentRenderTest(unittest.TestCase):
             ):
                 build_path = render_deployment("fevm", "baseline")
                 self.assertTrue(build_path.is_symlink())
+                initial_version = build_path.resolve()
+                versions_root = build_path.parent / ".versions"
+                alternate_version = versions_root / "atomicity-alternate"
+                alternate_version.mkdir()
+                (alternate_version / "app.yaml").write_text("alternate complete tree", encoding="utf-8")
                 missing_path_observed = []
                 stop_reading = threading.Event()
 
@@ -271,7 +277,9 @@ class DeploymentRenderTest(unittest.TestCase):
                 reader = threading.Thread(target=read_build_repeatedly)
                 reader.start()
                 try:
-                    render_deployment("fevm", "baseline")
+                    for publication in range(1_000):
+                        render._install_pointer(build_path, build_path.parent, alternate_version)
+                        render._install_pointer(build_path, build_path.parent, initial_version)
                 finally:
                     stop_reading.set()
                     reader.join()

@@ -46,23 +46,12 @@ def _records(response: dict | list, key: str) -> list[dict[str, Any]]:
     return [dict(record) for record in records]
 
 
-def _shared_for_fevm(target: TargetConfig, record: dict[str, Any]) -> bool:
-    if not target.shared_mcp_read_only:
-        return False
-    ownership_fields = (
-        "name", "display_name", "full_name", "app_name", "url", "experiment_name",
-    )
-    return not any(
-        isinstance(record.get(field), str)
-        and ("gurary_" in record[field].lower() or "gurary-" in record[field].lower())
-        for field in ownership_fields
-    )
-
-
-def _mark_records(target: TargetConfig, records: list[dict[str, Any]]) -> list[dict[str, Any]]:
+def _mark_records(
+    target: TargetConfig, records: list[dict[str, Any]], owned_names: tuple[str, ...] = ()
+) -> list[dict[str, Any]]:
     for record in records:
-        if _shared_for_fevm(target, record):
-            record["mutation_allowed"] = False
+        if target.shared_mcp_read_only:
+            record["mutation_allowed"] = record.get("name") in owned_names
     return records
 
 
@@ -96,7 +85,7 @@ def inventory_target(target_key: str) -> dict:
     inventory = {
         "workspace": {"key": target.key, "host": identity["host"], "workspace_id": target.workspace_id},
         "current_user": identity["current_user"],
-        "apps": _mark_records(target, apps),
+        "apps": _mark_records(target, apps, (target.presenter_app_name,)),
         "warehouses": _mark_records(target, warehouses),
         "genie_spaces": _mark_records(target, genie_spaces),
         "experiments": _mark_records(target, experiments),

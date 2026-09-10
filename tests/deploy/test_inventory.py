@@ -57,6 +57,62 @@ class JsonSafeDatabricksCliTest(unittest.TestCase):
 
 
 class InventoryTargetTest(unittest.TestCase):
+    def _inventory_with_apps(self, apps):
+        responses = iter(
+            [
+                {"apps": apps},
+                {"warehouses": []},
+                {"spaces": []},
+                {"experiments": []},
+                {"tables": []},
+                {"service_principals": []},
+                {"privilege_assignments": []},
+                {"projects": []},
+                {"connections": []},
+            ]
+        )
+        with patch("deploy.inventory.assert_profile", return_value={
+            "host": "https://fevm-worldtour-ai.cloud.databricks.com",
+            "current_user": {"user_name": "adam.gurary@databricks.com", "id": "123"},
+        }), patch("deploy.inventory.run_json", side_effect=lambda *_args: next(responses)):
+            return inventory_target("fevm")
+
+    def test_inventory_rejects_substring_ownership_in_urls_and_display_names(self):
+        # Catches reintroducing substring-based ownership detection in _shared_for_fevm.
+        inventory = self._inventory_with_apps(
+            [
+                {
+                    "name": "legacy-presenter-url",
+                    "url": "https://gurary-incidental.example",
+                    "owner": "gurary-incidental-owner",
+                },
+                {
+                    "name": "legacy-presenter-display",
+                    "display_name": "gurary-incidental-display",
+                    "description": "gurary_appears_only_in_metadata",
+                },
+            ]
+        )
+
+        self.assertEqual(
+            [app["mutation_allowed"] for app in inventory["apps"]], [False, False]
+        )
+
+    def test_inventory_fails_closed_for_missing_app_identity(self):
+        # Catches allowing an unknown record to become owned from its URL or display name.
+        inventory = self._inventory_with_apps(
+            [
+                {
+                    "app_id": "unknown-app",
+                    "name": None,
+                    "url": "https://gurary-incidental.example",
+                    "display_name": "gurary-incidental-display",
+                }
+            ]
+        )
+
+        self.assertFalse(inventory["apps"][0]["mutation_allowed"])
+
     def test_fevm_inventory_marks_shared_objects_read_only_and_scrubs_secrets(self):
         responses = {
             ("apps", "list"): {

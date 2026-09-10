@@ -1,4 +1,5 @@
 import json
+from hashlib import sha256
 import subprocess
 import tempfile
 import threading
@@ -284,6 +285,78 @@ class DeploymentRenderTest(unittest.TestCase):
             ), patch("deploy.render.STATE_ROOT", temporary_root / "state"):
                 with self.assertRaises(ValueError):
                     render_deployment("fevm", "baseline")
+
+    def test_multi_identifier_reference_requires_each_exact_policy_key(self):
+        first_identifier = "bobabricks-store-ops-" "demo"
+        second_identifier = "ad341da9-d12e-4688-ad1c-" "3c049cf70486"
+        relative_path = Path("historical-reference.txt")
+        line = f"Historical values: {first_identifier} and {second_identifier}"
+        fingerprint = sha256(line.encode("utf-8")).hexdigest()
+
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            temporary_root = Path(temporary_directory)
+            source_root = temporary_root / "source"
+            source_root.mkdir()
+            write_source_templates(source_root)
+            (source_root / relative_path).write_text(f"{line}\n", encoding="utf-8")
+            first_only_policy = {
+                (relative_path, first_identifier, fingerprint): 1,
+            }
+            with patch("deploy.render.ROOT", source_root), patch(
+                "deploy.render.BUILD_ROOT", temporary_root / "build"
+            ), patch("deploy.render.STATE_ROOT", temporary_root / "state"), patch(
+                "deploy.render._SAFE_REFERENCE_LINES", first_only_policy
+            ):
+                with self.assertRaises(ValueError) as error:
+                    render_deployment("fevm", "baseline")
+                self.assertIn(second_identifier, str(error.exception))
+
+            complete_policy = {
+                **first_only_policy,
+                (relative_path, second_identifier, fingerprint): 1,
+            }
+            with patch("deploy.render.ROOT", source_root), patch(
+                "deploy.render.BUILD_ROOT", temporary_root / "build"
+            ), patch("deploy.render.STATE_ROOT", temporary_root / "state"), patch(
+                "deploy.render._SAFE_REFERENCE_LINES", complete_policy
+            ):
+                render_deployment("fevm", "baseline")
+
+    def test_safe_reference_count_is_bounded_per_exact_policy_key(self):
+        first_identifier = "bobabricks-store-ops-" "demo"
+        second_identifier = "ad341da9-d12e-4688-ad1c-" "3c049cf70486"
+        relative_path = Path("historical-reference.txt")
+        line = f"Historical values: {first_identifier} and {second_identifier}"
+        fingerprint = sha256(line.encode("utf-8")).hexdigest()
+
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            temporary_root = Path(temporary_directory)
+            source_root = temporary_root / "source"
+            source_root.mkdir()
+            write_source_templates(source_root)
+            (source_root / relative_path).write_text(f"{line}\n{line}\n", encoding="utf-8")
+            mismatched_bounds = {
+                (relative_path, first_identifier, fingerprint): 2,
+                (relative_path, second_identifier, fingerprint): 1,
+            }
+            with patch("deploy.render.ROOT", source_root), patch(
+                "deploy.render.BUILD_ROOT", temporary_root / "build"
+            ), patch("deploy.render.STATE_ROOT", temporary_root / "state"), patch(
+                "deploy.render._SAFE_REFERENCE_LINES", mismatched_bounds
+            ):
+                with self.assertRaises(ValueError) as error:
+                    render_deployment("fevm", "baseline")
+                self.assertIn(second_identifier, str(error.exception))
+
+            complete_bounds = {
+                key: 2 for key in mismatched_bounds
+            }
+            with patch("deploy.render.ROOT", source_root), patch(
+                "deploy.render.BUILD_ROOT", temporary_root / "build"
+            ), patch("deploy.render.STATE_ROOT", temporary_root / "state"), patch(
+                "deploy.render._SAFE_REFERENCE_LINES", complete_bounds
+            ):
+                render_deployment("fevm", "baseline")
 
     def test_replaces_build_pointer_without_a_missing_path(self):
         with tempfile.TemporaryDirectory() as temporary_directory:

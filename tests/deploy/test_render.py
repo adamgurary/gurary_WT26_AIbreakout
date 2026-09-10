@@ -1,6 +1,7 @@
 import json
 import subprocess
 import tempfile
+import threading
 import unittest
 from pathlib import Path
 from unittest.mock import patch
@@ -12,11 +13,26 @@ from deploy.render import render_deployment
 
 
 ROOT = Path(__file__).resolve().parents[2]
+MANIFESTS = (
+    "app.yaml",
+    "app.yml",
+    "mcp-apps/storetime/app.yaml",
+    "mcp-apps/storetime/app.yml",
+    "mcp-apps/opstask/app.yaml",
+    "mcp-apps/opstask/app.yml",
+)
 
 
 def manifest_env(path: Path) -> dict[str, str]:
     manifest = yaml.safe_load(path.read_text(encoding="utf-8"))
     return {entry["name"]: str(entry["value"]) for entry in manifest["env"]}
+
+
+def write_source_templates(source_root: Path) -> None:
+    for relative_path in MANIFESTS:
+        path = source_root / relative_path
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text('command: ["python", "-m", "scripts.start_app"]\nenv: []\n', encoding="utf-8")
 
 
 class DeploymentRenderTest(unittest.TestCase):
@@ -32,10 +48,17 @@ class DeploymentRenderTest(unittest.TestCase):
             (state_root / "field_eng.json").write_text(
                 json.dumps(
                     {
+                        "target": "field_eng",
                         "warehouse_id": "field-eng-warehouse-id",
                         "genie_space_id": "field-eng-genie-id",
-                        "storetime_mcp_url": "https://field-eng-storetime.example/mcp",
-                        "opstask_mcp_url": "https://field-eng-opstask.example/mcp",
+                        "storetime_mcp_url": (
+                            "https://gurary-bobabricks-storetime-mcp-"
+                            "1444828305810485.aws.databricksapps.com/mcp"
+                        ),
+                        "opstask_mcp_url": (
+                            "https://gurary-bobabricks-opstask-mcp-"
+                            "1444828305810485.aws.databricksapps.com/mcp"
+                        ),
                         "lakebase": {
                             "validated": True,
                             "project": "gurary-bobabricks",
@@ -110,7 +133,9 @@ class DeploymentRenderTest(unittest.TestCase):
                             self.assertEqual(root_env["DATABRICKS_WAREHOUSE_ID"], "field-eng-warehouse-id")
                             self.assertEqual(root_env["GENIE_SPACE_ID"], "field-eng-genie-id")
                             self.assertEqual(
-                                root_env["STORETIME_MCP_URL"], "https://field-eng-storetime.example/mcp"
+                                root_env["STORETIME_MCP_URL"],
+                                "https://gurary-bobabricks-storetime-mcp-"
+                                "1444828305810485.aws.databricksapps.com/mcp",
                             )
                             self.assertIn("LAKEBASE_ENDPOINT", root_env)
 
@@ -118,6 +143,99 @@ class DeploymentRenderTest(unittest.TestCase):
             ["git", "status", "--short"], cwd=ROOT, check=True, text=True, capture_output=True
         ).stdout
         self.assertEqual(status_after, status_before)
+
+    def test_rejects_untrusted_or_incomplete_generated_state(self):
+        invalid_states = (
+            ("fevm", {"target": "fevm", "warehouse_id": "attacker-warehouse"}),
+            ("field_eng", {"target": "fevm"}),
+            ("field_eng", {"target": "field_eng", "warehouse_id": []}),
+            ("field_eng", {"target": "field_eng", "unexpected": "value"}),
+            ("field_eng", {"target": "field_eng", "lakebase": {"validated": True}}),
+            (
+                "fevm",
+                {
+                    "target": "fevm",
+                    "lakebase": {
+                        "validated": True,
+                        "project": "attacker-project",
+                        "branch": "attacker-branch",
+                        "endpoint": "attacker-endpoint",
+                        "database": "attacker-database",
+                        "schema": "attacker-schema",
+                    },
+                },
+            ),
+        )
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            temporary_root = Path(temporary_directory)
+            state_root = temporary_root / "state"
+            state_root.mkdir()
+            with patch("deploy.render.BUILD_ROOT", temporary_root / "build"), patch(
+                "deploy.render.STATE_ROOT", state_root
+            ):
+                for target_key, generated_state in invalid_states:
+                    with self.subTest(target=target_key, state=generated_state):
+                        (state_root / f"{target_key}.json").write_text(
+                            json.dumps(generated_state), encoding="utf-8"
+                        )
+                        with self.assertRaises(ValueError):
+                            render_deployment(target_key, "baseline")
+
+    def test_scans_all_rendered_text_and_rejects_source_symlinks(self):
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            temporary_root = Path(temporary_directory)
+            source_root = temporary_root / "source"
+            source_root.mkdir()
+            write_source_templates(source_root)
+            state_root = temporary_root / "state"
+            state_root.mkdir()
+            build_root = temporary_root / "build"
+
+            (source_root / "notes.txt").write_text(
+                "bobabricks-store-ops-demo", encoding="utf-8"
+            )
+            with patch("deploy.render.ROOT", source_root), patch(
+                "deploy.render.BUILD_ROOT", build_root
+            ), patch("deploy.render.STATE_ROOT", state_root):
+                with self.assertRaises(ValueError):
+                    render_deployment("fevm", "baseline")
+
+            (source_root / "notes.txt").unlink()
+            outside_file = temporary_root / "outside.txt"
+            outside_file.write_text("outside", encoding="utf-8")
+            (source_root / "linked.txt").symlink_to(outside_file)
+            with patch("deploy.render.ROOT", source_root), patch(
+                "deploy.render.BUILD_ROOT", build_root
+            ), patch("deploy.render.STATE_ROOT", state_root):
+                with self.assertRaises(ValueError):
+                    render_deployment("fevm", "baseline")
+
+    def test_replaces_build_pointer_without_a_missing_path(self):
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            temporary_root = Path(temporary_directory)
+            with patch("deploy.render.BUILD_ROOT", temporary_root / "build"), patch(
+                "deploy.render.STATE_ROOT", temporary_root / "state"
+            ):
+                build_path = render_deployment("fevm", "baseline")
+                self.assertTrue(build_path.is_symlink())
+                missing_path_observed = []
+                stop_reading = threading.Event()
+
+                def read_build_repeatedly():
+                    while not stop_reading.is_set():
+                        try:
+                            (build_path / "app.yaml").read_text(encoding="utf-8")
+                        except OSError as error:
+                            missing_path_observed.append(error)
+
+                reader = threading.Thread(target=read_build_repeatedly)
+                reader.start()
+                try:
+                    render_deployment("fevm", "baseline")
+                finally:
+                    stop_reading.set()
+                    reader.join()
+                self.assertEqual(missing_path_observed, [])
 
 
 if __name__ == "__main__":

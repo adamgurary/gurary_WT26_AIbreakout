@@ -1,0 +1,8 @@
+key: upgraded
+confluence_enabled: true
+extra_tools:
+  - search_confluence
+required_tools:
+  - query_space
+  - inspect_schedule
+  - list_existing_ops_tasks

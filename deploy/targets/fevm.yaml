@@ -1,0 +1,17 @@
+key: fevm
+profile: fevm-worldtour-ai
+host: https://fevm-worldtour-ai.cloud.databricks.com
+workspace_id: "7474657163903557"
+presenter_app_name: gurary-bobabricks-store-ops
+catalog: worldtour_ai_catalog
+data_schema: bobabricks_store_ops
+trace_schema: ai_gateway_demo
+table_prefix: ""
+warehouse_id: 88fd32ee6d9438ac
+genie_space_id: 01f1968067e81bd09eacb0d88bcc57de
+storetime_app_name: bobabricks-storetime-mcp
+storetime_mcp_url: https://bobabricks-storetime-mcp-7474657163903557.aws.databricksapps.com/mcp
+opstask_app_name: bobabricks-opstask-mcp
+opstask_mcp_url: https://bobabricks-opstask-mcp-7474657163903557.aws.databricksapps.com/mcp
+confluence_connection: system_ai_agent_atlassian_mcp
+shared_mcp_read_only: true

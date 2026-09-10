@@ -8,3 +8,4 @@ mlflow>=3.14,<4
 httpx>=0.28.0
 uuid-utils>=0.10.0
 python-dotenv>=1.2.1
+PyYAML>=6.0.2,<7

@@ -1,0 +1,7 @@
+key: baseline
+confluence_enabled: false
+extra_tools: []
+required_tools:
+  - query_space
+  - inspect_schedule
+  - list_existing_ops_tasks

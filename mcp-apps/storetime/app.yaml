@@ -4,10 +4,4 @@ command:
   - 0.0.0.0:8000
   - app:app
 
-env:
-  - name: DATABRICKS_WAREHOUSE_ID
-    value: 88fd32ee6d9438ac
-  - name: DATABRICKS_CATALOG
-    value: worldtour_ai_catalog
-  - name: DATABRICKS_SCHEMA
-    value: bobabricks_store_ops
+env: []

@@ -58,7 +58,7 @@ _REF_AMBER_APP = ("bobabricks-store-" "ops-demo")
 _REF_FEVM_STORETIME_APP = ("bobabricks-store" "time-mcp")
 _REF_FEVM_DATA_SCHEMA = ("bobabricks_store_" "ops")
 _REF_FIELD_OPSTASK_APP = ("gurary-bobabricks-ops" "task-mcp")
-_REF_FIELD_STORETIME_APP = ("gurary-bobabricks-store" "time-mcp")
+_REF_FIELD_STORETIME_APP = ("gurary-bobabricks-store" "time")
 _REF_FIELD_TRACE_SCHEMA = ("gurary_ai_gate" "way_demo")
 _REF_FIELD_GENIE_NAME = ("gurary_bobabricks_store_" "operations")
 _REF_FIELD_DATA_SCHEMA = ("gurary_bobabricks_store_" "ops")
@@ -146,7 +146,7 @@ _SAFE_REFERENCE_LINES: dict[tuple[Path, str, str], int] = {
     (Path('deploy/targets/field_eng.yaml'), _REF_FIELD_TRACE_SCHEMA, '7b733b2867bcbe56f12fea81c46ceb02695437d102793dd6201a453f0407f7e6'): 1,
     (Path('deploy/targets/field_eng.yaml'), _REF_FIELD_OPSTASK_APP, '91db8426a7be5733c9be04ec475d880b1ee8de51c7b1193952844a7c4f935f0d'): 1,
     (Path('deploy/targets/field_eng.yaml'), _REF_FIELD_DATA_SCHEMA, '9cabfa5fb5f1585b7ef066180fb1034cb75a902952ce19a24c7c5f6aedb80d6b'): 1,
-    (Path('deploy/targets/field_eng.yaml'), _REF_FIELD_STORETIME_APP, 'a381e725cb39114bcb0c6ee2ed752ad5081b314a9848683f2c1b4953290a50ed'): 1,
+    (Path('deploy/targets/field_eng.yaml'), _REF_FIELD_STORETIME_APP, 'db4ebadbf4296d5db632bf8d14768b606cdcab4e9ec308902fe72229cbf0c8bd'): 1,
     (Path('deploy/targets/field_eng.yaml'), _REF_FIELD_WAREHOUSE_NAME, 'f617c1632690c1185feb25eedf0bdc5421ab037f3440493b52a3fe3b9889d30a'): 1,
     (Path('mcp-apps/README.md'), _REF_FEVM_OPSTASK_APP, '0da57af4cba8879fa286724ce57355cac48a34a7911ef9ca1dce216bdb3eaf3f'): 1,
     (Path('mcp-apps/README.md'), _REF_FEVM_STORETIME_APP, '1fbd67aa5a37523e8ad36b27713c9163afa70cf0c45dc4b2e1e70ec37ced6e62'): 1,

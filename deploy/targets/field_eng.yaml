@@ -9,7 +9,7 @@ trace_schema: gurary_ai_gateway_demo
 table_prefix: gurary_
 warehouse_name: gurary_bobabricks_warehouse
 genie_space_name: gurary_bobabricks_store_operations
-storetime_app_name: gurary-bobabricks-storetime-mcp
+storetime_app_name: gurary-bobabricks-storetime
 opstask_app_name: gurary-bobabricks-opstask-mcp
 lakebase_project: gurary-bobabricks
 lakebase_branch: production

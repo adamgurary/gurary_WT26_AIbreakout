@@ -50,7 +50,7 @@ def field_eng_state(storetime_url: str | None = None) -> dict:
         "warehouse_id": "field-eng-warehouse-id",
         "genie_space_id": "field-eng-genie-id",
         "storetime_mcp_url": storetime_url
-        or "https://gurary-bobabricks-storetime-mcp-1444828305810485.aws.databricksapps.com/mcp",
+        or "https://gurary-bobabricks-storetime-1444828305810485.aws.databricksapps.com/mcp",
         "opstask_mcp_url": "https://gurary-bobabricks-opstask-mcp-1444828305810485.aws.databricksapps.com/mcp",
         "mlflow_experiment_name": "/Shared/gurary-bobabricks-store-ops-uc",
         "lakebase": {
@@ -164,7 +164,7 @@ class DeploymentRenderTest(unittest.TestCase):
                             self.assertEqual(root_env["GENIE_SPACE_ID"], "field-eng-genie-id")
                             self.assertEqual(
                                 root_env["STORETIME_MCP_URL"],
-                                "https://gurary-bobabricks-storetime-mcp-"
+                                "https://gurary-bobabricks-storetime-"
                                 "1444828305810485.aws.databricksapps.com/mcp",
                             )
                             self.assertIn("LAKEBASE_ENDPOINT", root_env)

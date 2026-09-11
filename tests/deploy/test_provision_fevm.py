@@ -2,6 +2,7 @@ import json
 import os
 import tempfile
 import unittest
+import uuid
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
@@ -18,10 +19,13 @@ from scripts.provision_fevm_fallback import (
 
 
 SHARED_PRESENTER = "bobabricks-store-ops-" "demo"
+OWNED_APP_NAME = "gurary-bobabricks-store-ops"
+OWNED_APP_ID = "40f3a1cc-c3bb-5a22-ab5e-902776d2d430"
+OWNED_PRINCIPAL_ID = "a7c8bd4a-cec0-5c26-951f-cf6577491cb4"
 PROBE_SESSION = "fresh-probe-session"
 PROBE_STARTED_AT_MS = 1_789_000_000_000
 PROBE_EXPERIMENT = (
-    "/Users/gurary-bobabricks-store-ops-principal/"
+    f"/Users/{OWNED_PRINCIPAL_ID}/"
     "gurary_bobabricks_store_ops_uc"
 )
 PROBE_TRACE_LOCATION = (
@@ -63,6 +67,12 @@ def probe_kwargs() -> dict:
 
 
 def app_response(name: str, workspace_id: str) -> dict:
+    app_id = OWNED_APP_ID if name == OWNED_APP_NAME else str(
+        uuid.uuid5(uuid.NAMESPACE_DNS, f"{name}-app")
+    )
+    principal_id = OWNED_PRINCIPAL_ID if name == OWNED_APP_NAME else str(
+        uuid.uuid5(uuid.NAMESPACE_DNS, f"{name}-principal")
+    )
     return {
         "active_deployment": {
             "deployment_id": "deployment-123",
@@ -72,19 +82,19 @@ def app_response(name: str, workspace_id: str) -> dict:
         "app_status": {"message": "App is running", "state": "RUNNING"},
         "compute_status": {"message": "Compute is active", "state": "ACTIVE"},
         "create_time": "2026-09-10T12:00:00Z",
-        "creator": "owner@example.com",
+        "creator": "adam.gurary@databricks.com",
         "default_source_code_path": "/Workspace/Users/owner/source",
         "description": "Bobabricks dependency",
         "effective_user_api_scopes": ["ai-gateway", "genie", "mcp.external"],
-        "id": f"{name}-id",
+        "id": app_id,
         "name": name,
         "oauth2_app_client_id": "oauth-client-123",
         "oauth2_app_integration_id": "oauth-integration-123",
-        "service_principal_client_id": f"{name}-principal",
+        "service_principal_client_id": principal_id,
         "service_principal_id": "123456789",
         "service_principal_name": name,
         "update_time": "2026-09-10T12:00:00Z",
-        "updater": "owner@example.com",
+        "updater": "adam.gurary@databricks.com",
         "url": f"https://{name}-{workspace_id}.aws.databricksapps.com",
         "user_api_scopes": ["ai-gateway", "genie", "mcp.external"],
     }
@@ -124,11 +134,15 @@ class FakeReadOnlyCli:
         owned_app: dict | None = None,
         change_second_snapshot: bool = False,
         apps_top_level_list: bool = False,
+        warehouse_state: str = "RUNNING",
+        adversarial_inventory: bool = False,
     ):
         self.target = load_target("fevm")
         self.owned_app = owned_app
         self.change_second_snapshot = change_second_snapshot
         self.apps_top_level_list = apps_top_level_list
+        self.warehouse_state = warehouse_state
+        self.adversarial_inventory = adversarial_inventory
         self.snapshot_reads = 0
 
     def __call__(self, profile: str, args: list[str], payload: dict | None = None):
@@ -159,7 +173,7 @@ class FakeReadOnlyCli:
                 "name": "Shared Warehouse",
                 "num_active_sessions": 0,
                 "num_clusters": 1,
-                "state": "RUNNING",
+                "state": self.warehouse_state,
                 "warehouse_type": "PRO",
             }
         if key == ("catalogs", "get", self.target.catalog):
@@ -191,7 +205,7 @@ class FakeReadOnlyCli:
             }
         connection_name = self.target.confluence_connection
         if key == ("connections", "get", connection_name):
-            return {
+            connection = {
                 "comment": "Managed read-only dependency",
                 "connection_id": "connection-123",
                 "connection_type": "HTTP",
@@ -209,6 +223,19 @@ class FakeReadOnlyCli:
                 "updated_by": "owner@example.com",
                 "url": "https://example.invalid",
             }
+            if self.adversarial_inventory:
+                connection.update(
+                    {
+                        "oauthMetadata": {"clientId": "oauth-metadata-value"},
+                        "password": "password-value",
+                        "private-key": "private-key-value",
+                        "accessKeyId": "access-key-value",
+                        "authorization_header": "authorization-value",
+                        "client_secret": "secret-value",
+                        "connectionOptions": {"password": "connection-option-value"},
+                    }
+                )
+            return connection
         table_name = f"{schema_name}.ops_tasks"
         if key == ("tables", "get", table_name):
             return {
@@ -260,6 +287,10 @@ class FakeMutableCli:
         forbid_grant_calls: bool = False,
         require_source_acl: bool = False,
         require_manifest_check: bool = False,
+        rotate_app_id_after_scope_update: bool = False,
+        requested_deployment_state: str = "SUCCEEDED",
+        requested_deployment_source: str | None = None,
+        retain_unrelated_active_deployment: bool = False,
     ):
         self.target = load_target("fevm")
         self.app = None
@@ -267,8 +298,13 @@ class FakeMutableCli:
         self.forbid_grant_calls = forbid_grant_calls
         self.require_source_acl = require_source_acl
         self.require_manifest_check = require_manifest_check
+        self.rotate_app_id_after_scope_update = rotate_app_id_after_scope_update
+        self.requested_deployment_state = requested_deployment_state
+        self.requested_deployment_source = requested_deployment_source
+        self.retain_unrelated_active_deployment = retain_unrelated_active_deployment
         self.workspace_manifest_checked = False
         self.workspace_acl: dict[str, str] = {}
+        self.deployments: dict[str, dict] = {}
 
     def __call__(self, profile: str, args: list[str], payload: dict | None = None):
         if profile != self.target.profile:
@@ -295,6 +331,8 @@ class FakeMutableCli:
                 raise AssertionError("unsafe app update payload")
             self.app["user_api_scopes"] = list(payload["user_api_scopes"])
             self.app["effective_user_api_scopes"] = list(payload["user_api_scopes"])
+            if self.rotate_app_id_after_scope_update:
+                self.app["id"] = "e7796394-c458-5640-bb8e-39abca702e72"
             return dict(self.app)
         if key[:1] == ("grants",) and self.forbid_grant_calls:
             raise AssertionError("preauthorized mode accessed the grants API")
@@ -400,14 +438,34 @@ class FakeMutableCli:
                 raise AssertionError("owned app cannot read the synced source directory")
             if self.require_manifest_check and not self.workspace_manifest_checked:
                 raise AssertionError("synced root manifest was not checked before deployment")
-            self.app["active_deployment"] = {
+            requested_source = self.requested_deployment_source or args[
+                args.index("--source-code-path") + 1
+            ]
+            deployment = {
                 "deployment_id": "deployment-456",
-                "source_code_path": args[args.index("--source-code-path") + 1],
-                "status": {"message": "Deployment succeeded", "state": "SUCCEEDED"},
+                "source_code_path": requested_source,
+                "status": {
+                    "message": "Requested deployment state",
+                    "state": self.requested_deployment_state,
+                },
             }
+            self.deployments["deployment-456"] = deployment
+            if self.retain_unrelated_active_deployment:
+                self.app["active_deployment"] = {
+                    "deployment_id": "deployment-older",
+                    "source_code_path": args[args.index("--source-code-path") + 1],
+                    "status": {"message": "Older deployment succeeded", "state": "SUCCEEDED"},
+                }
+            else:
+                self.app["active_deployment"] = dict(deployment)
             self.app["app_status"] = {"message": "App is running", "state": "RUNNING"}
             self.app["compute_status"] = {"message": "Compute is active", "state": "ACTIVE"}
-            return dict(self.app["active_deployment"])
+            return dict(deployment)
+        if key[:3] == ("apps", "get-deployment", self.target.presenter_app_name):
+            deployment = self.deployments.get(key[3])
+            if deployment is None:
+                raise AssertionError("an unrelated deployment ID was polled")
+            return dict(deployment)
         raise AssertionError(f"unexpected CLI mutation boundary: {key}")
 
 
@@ -449,6 +507,25 @@ class FevmProvisionPlanTest(unittest.TestCase):
                 lakebase_inventory_provider=lambda profile: [],
             )
 
+    def test_dry_run_refuses_sql_when_shared_warehouse_is_not_running(self):
+        cli = FakeReadOnlyCli(warehouse_state="STOPPED")
+
+        with self.assertRaisesRegex(RuntimeError, "warehouse must already be RUNNING"):
+            build_provision_plan(
+                run_cli=cli,
+                verify_profile=lambda profile, host: {
+                    "host": host,
+                    "current_user": {
+                        "user_name": "adam.gurary@databricks.com",
+                        "id": "user-123",
+                    },
+                },
+                workspace_id_provider=lambda profile: load_target("fevm").workspace_id,
+                lakebase_inventory_provider=lambda profile: [],
+            )
+
+        self.assertEqual(cli.snapshot_reads, 0)
+
     def test_existing_owned_app_is_reconciled_without_a_create_action(self):
         target = load_target("fevm")
         owned = app_response(target.presenter_app_name, target.workspace_id)
@@ -465,6 +542,76 @@ class FevmProvisionPlanTest(unittest.TestCase):
 
         self.assertNotIn("create_app", [action.kind for action in plan.actions])
         self.assertEqual(plan.actions[0].kind, "update_app_scopes")
+
+    def test_owned_app_metadata_rejects_non_uuid_identities(self):
+        from scripts.provision_fevm_fallback import _require_owned_app_metadata
+
+        target = load_target("fevm")
+        malformed = app_response(target.presenter_app_name, target.workspace_id)
+        malformed["id"] = "not-a-uuid"
+
+        with self.assertRaisesRegex(RuntimeError, "concrete UUID id"):
+            _require_owned_app_metadata(target, malformed)
+
+    def test_existing_same_named_app_requires_authoritative_ownership(self):
+        target = load_target("fevm")
+        foreign = app_response(target.presenter_app_name, target.workspace_id)
+        foreign["creator"] = "foreign-owner@example.com"
+
+        with tempfile.TemporaryDirectory() as temporary_directory, self.assertRaisesRegex(
+            RuntimeError, "ownership"
+        ):
+            build_provision_plan(
+                run_cli=FakeReadOnlyCli(owned_app=foreign),
+                verify_profile=lambda profile, host: {
+                    "host": host,
+                    "current_user": {
+                        "user_name": "adam.gurary@databricks.com",
+                        "id": "user-123",
+                    },
+                },
+                workspace_id_provider=lambda profile: target.workspace_id,
+                lakebase_inventory_provider=lambda profile: [],
+            )
+
+    def test_saved_identity_preserves_legitimate_existing_app(self):
+        target = load_target("fevm")
+        existing = app_response(target.presenter_app_name, target.workspace_id)
+        existing["creator"] = "historical-owner@example.com"
+
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            state_path = Path(temporary_directory) / "fevm.json"
+            state_path.write_text(
+                json.dumps(
+                    {
+                        "target": "fevm",
+                        "presenter_app_id": existing["id"],
+                        "presenter_service_principal_client_id": existing[
+                            "service_principal_client_id"
+                        ],
+                    }
+                ),
+                encoding="utf-8",
+            )
+            try:
+                plan = build_provision_plan(
+                    run_cli=FakeReadOnlyCli(owned_app=existing),
+                    verify_profile=lambda profile, host: {
+                        "host": host,
+                        "current_user": {
+                            "user_name": "adam.gurary@databricks.com",
+                            "id": "user-123",
+                        },
+                    },
+                    workspace_id_provider=lambda profile: target.workspace_id,
+                    lakebase_inventory_provider=lambda profile: [],
+                    state_path=state_path,
+                )
+            except (RuntimeError, TypeError) as error:
+                self.fail(f"saved owned identity was not accepted: {error}")
+
+        self.assertIsNotNone(plan.owned_app)
+        self.assertNotIn("create_app", [action.kind for action in plan.actions])
 
     def test_preauthorized_plan_records_external_grants_without_local_reconciliation(self):
         target = load_target("fevm")
@@ -541,8 +688,276 @@ class FevmProvisionPlanTest(unittest.TestCase):
 
         self.assertEqual(canonical_ops_snapshot(rows_a), canonical_ops_snapshot(rows_b))
 
+    def test_plan_inventory_persists_only_allowlisted_dependency_evidence(self):
+        target = load_target("fevm")
+        plan = build_provision_plan(
+            run_cli=FakeReadOnlyCli(adversarial_inventory=True),
+            verify_profile=lambda profile, host: {
+                "host": host,
+                "current_user": {
+                    "user_name": "adam.gurary@databricks.com",
+                    "id": "user-123",
+                },
+            },
+            workspace_id_provider=lambda profile: target.workspace_id,
+            lakebase_inventory_provider=lambda profile: [
+                {
+                    "name": "projects/shared-project",
+                    "project_id": "shared-project",
+                    "status": "ACTIVE",
+                    "password": "lakebase-password-value",
+                }
+            ],
+        )
+
+        dependencies = plan.inventory_dict()["shared_dependencies"]
+        self.assertEqual(
+            set(dependencies["presenter_app"]["record"]),
+            {
+                "active_deployment",
+                "app_status",
+                "compute_status",
+                "creator",
+                "id",
+                "name",
+                "service_principal_client_id",
+                "url",
+            },
+        )
+        self.assertEqual(
+            set(dependencies["managed_connection"]["record"]),
+            {
+                "connection_id",
+                "connection_type",
+                "full_name",
+                "name",
+                "owner",
+                "read_only",
+            },
+        )
+        self.assertEqual(
+            set(dependencies["lakebase_projects"]["record"][0]),
+            {"name", "project_id", "status"},
+        )
+        serialized = json.dumps(dependencies)
+        for value in (
+            "oauth-metadata-value",
+            "password-value",
+            "private-key-value",
+            "access-key-value",
+            "authorization-value",
+            "secret-value",
+            "connection-option-value",
+            "lakebase-password-value",
+        ):
+            self.assertNotIn(value, serialized)
+
 
 class FevmReconciliationTest(unittest.TestCase):
+    def test_apply_refreshes_binding_before_writing_inventory(self):
+        target = load_target("fevm")
+        plan = build_provision_plan(
+            run_cli=FakeReadOnlyCli(),
+            verify_profile=lambda profile, host: {
+                "host": host,
+                "current_user": {
+                    "user_name": "adam.gurary@databricks.com",
+                    "id": "user-123",
+                },
+            },
+            workspace_id_provider=lambda profile: target.workspace_id,
+            lakebase_inventory_provider=lambda profile: [],
+            preauthorized_trace_grants=True,
+        )
+
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            inventory_path = root / "live-fevm-before.json"
+            with self.assertRaisesRegex(RuntimeError, "binding refresh failed"):
+                apply_provision_plan(
+                    plan,
+                    run_cli=FakeMutableCli(forbid_grant_calls=True),
+                    verify_profile=lambda profile, host: (_ for _ in ()).throw(
+                        RuntimeError("binding refresh failed")
+                    ),
+                    workspace_id_provider=lambda profile: target.workspace_id,
+                    state_path=root / "state" / "fevm.json",
+                    inventory_path=inventory_path,
+                    sync_runner=lambda command: None,
+                    **probe_kwargs(),
+                )
+
+            self.assertFalse(inventory_path.exists())
+
+    def test_apply_refreshes_host_user_and_workspace_immediately_before_trace_invocation(self):
+        target = load_target("fevm")
+        plan = build_provision_plan(
+            run_cli=FakeReadOnlyCli(),
+            verify_profile=lambda profile, host: {
+                "host": host,
+                "current_user": {
+                    "user_name": "adam.gurary@databricks.com",
+                    "id": "user-123",
+                },
+            },
+            workspace_id_provider=lambda profile: target.workspace_id,
+            lakebase_inventory_provider=lambda profile: [],
+            preauthorized_trace_grants=True,
+        )
+        events = []
+        cli = FakeMutableCli(forbid_grant_calls=True)
+
+        def run_cli(profile: str, args: list[str], payload: dict | None = None):
+            events.append("cli")
+            return cli(profile, args, payload)
+
+        def verify_profile(profile: str, host: str) -> dict:
+            events.append("host_user")
+            return {
+                "host": host,
+                "current_user": {
+                    "user_name": "adam.gurary@databricks.com",
+                    "id": "user-123",
+                },
+            }
+
+        def workspace_id(profile: str) -> str:
+            events.append("workspace")
+            return target.workspace_id
+
+        def invoke(profile: str, app_url: str, payload: dict) -> dict:
+            events.append("invoke")
+            if events.count("invoke") == 1:
+                from scripts.provision_fevm_fallback import TransientAppInvocationError
+
+                raise TransientAppInvocationError("not ready")
+            return successful_probe_invocation(profile, app_url, payload)
+
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            with patch("deploy.render.STATE_ROOT", root / "state"), patch(
+                "deploy.render.BUILD_ROOT", root / "build"
+            ):
+                apply_provision_plan(
+                    plan,
+                    run_cli=run_cli,
+                    verify_profile=verify_profile,
+                    workspace_id_provider=workspace_id,
+                    state_path=root / "state" / "fevm.json",
+                    inventory_path=root / "live-fevm-before.json",
+                    sync_runner=lambda command: None,
+                    app_invoker=invoke,
+                    trace_proof_provider=successful_trace_proof,
+                    session_id_provider=lambda: PROBE_SESSION,
+                    now_ms=lambda: PROBE_STARTED_AT_MS,
+                    app_ready_waiter=lambda seconds: events.append("wait"),
+                )
+
+        invoke_indexes = [index for index, event in enumerate(events) if event == "invoke"]
+        self.assertEqual(len(invoke_indexes), 2)
+        for invoke_index in invoke_indexes:
+            self.assertEqual(
+                events[invoke_index - 2 : invoke_index], ["host_user", "workspace"]
+            )
+
+    def _assert_deployment_rejected(self, cli: FakeMutableCli, expected_error: str) -> None:
+        target = load_target("fevm")
+        plan = build_provision_plan(
+            run_cli=FakeReadOnlyCli(),
+            verify_profile=lambda profile, host: {
+                "host": host,
+                "current_user": {
+                    "user_name": "adam.gurary@databricks.com",
+                    "id": "user-123",
+                },
+            },
+            workspace_id_provider=lambda profile: target.workspace_id,
+            lakebase_inventory_provider=lambda profile: [],
+            preauthorized_trace_grants=True,
+        )
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            with patch("deploy.render.STATE_ROOT", root / "state"), patch(
+                "deploy.render.BUILD_ROOT", root / "build"
+            ), self.assertRaisesRegex(RuntimeError, expected_error):
+                apply_provision_plan(
+                    plan,
+                    run_cli=cli,
+                    verify_profile=lambda profile, host: {
+                        "host": host,
+                        "current_user": {
+                            "user_name": "adam.gurary@databricks.com",
+                            "id": "user-123",
+                        },
+                    },
+                    workspace_id_provider=lambda profile: target.workspace_id,
+                    state_path=root / "state" / "fevm.json",
+                    inventory_path=root / "live-fevm-before.json",
+                    sync_runner=lambda command: None,
+                    **probe_kwargs(),
+                )
+
+    def test_apply_rejects_older_active_deployment_when_requested_deployment_failed(self):
+        self._assert_deployment_rejected(
+            FakeMutableCli(
+                forbid_grant_calls=True,
+                requested_deployment_state="FAILED",
+                retain_unrelated_active_deployment=True,
+            ),
+            "(?i)requested deployment",
+        )
+
+    def test_apply_rejects_requested_deployment_from_another_source_path(self):
+        self._assert_deployment_rejected(
+            FakeMutableCli(
+                forbid_grant_calls=True,
+                requested_deployment_source="/Workspace/Users/foreign/unrelated-source",
+                retain_unrelated_active_deployment=True,
+            ),
+            "source path",
+        )
+
+    def test_apply_rejects_owned_app_id_change_during_reconciliation(self):
+        target = load_target("fevm")
+        plan = build_provision_plan(
+            run_cli=FakeReadOnlyCli(),
+            verify_profile=lambda profile, host: {
+                "host": host,
+                "current_user": {
+                    "user_name": "adam.gurary@databricks.com",
+                    "id": "user-123",
+                },
+            },
+            workspace_id_provider=lambda profile: target.workspace_id,
+            lakebase_inventory_provider=lambda profile: [],
+            preauthorized_trace_grants=True,
+        )
+
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            with patch("deploy.render.STATE_ROOT", root / "state"), patch(
+                "deploy.render.BUILD_ROOT", root / "build"
+            ), self.assertRaisesRegex(RuntimeError, "identity changed"):
+                apply_provision_plan(
+                    plan,
+                    run_cli=FakeMutableCli(
+                        forbid_grant_calls=True,
+                        rotate_app_id_after_scope_update=True,
+                    ),
+                    verify_profile=lambda profile, host: {
+                        "host": host,
+                        "current_user": {
+                            "user_name": "adam.gurary@databricks.com",
+                            "id": "user-123",
+                        },
+                    },
+                    workspace_id_provider=lambda profile: target.workspace_id,
+                    state_path=root / "state" / "fevm.json",
+                    inventory_path=root / "live-fevm-before.json",
+                    sync_runner=lambda command: None,
+                    **probe_kwargs(),
+                )
+
     def test_apply_uses_discovered_principal_and_deploys_rendered_disabled_memory_state(self):
         target = load_target("fevm")
         plan = build_provision_plan(
@@ -582,6 +997,7 @@ class FevmReconciliationTest(unittest.TestCase):
                     state_path=state_root / "fevm.json",
                     inventory_path=root / "live-fevm-before.json",
                     sync_runner=run_sync,
+                    **probe_kwargs(),
                 )
 
             state = json.loads((state_root / "fevm.json").read_text(encoding="utf-8"))
@@ -626,6 +1042,58 @@ class FevmReconciliationTest(unittest.TestCase):
                 },
             }
             self.assertEqual(cli.grants, expected_grants)
+
+    def test_default_grant_apply_requires_exact_live_uc_trace_proof(self):
+        target = load_target("fevm")
+        plan = build_provision_plan(
+            run_cli=FakeReadOnlyCli(),
+            verify_profile=lambda profile, host: {
+                "host": host,
+                "current_user": {
+                    "user_name": "adam.gurary@databricks.com",
+                    "id": "user-123",
+                },
+            },
+            workspace_id_provider=lambda profile: target.workspace_id,
+            lakebase_inventory_provider=lambda profile: [],
+        )
+        observed = []
+
+        def invoke(profile: str, app_url: str, payload: dict) -> dict:
+            observed.append("invoke")
+            return successful_probe_invocation(profile, app_url, payload)
+
+        def prove(request: dict) -> dict:
+            observed.append("prove")
+            return successful_trace_proof(request)
+
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            with patch("deploy.render.STATE_ROOT", root / "state"), patch(
+                "deploy.render.BUILD_ROOT", root / "build"
+            ):
+                evidence = apply_provision_plan(
+                    plan,
+                    run_cli=FakeMutableCli(),
+                    verify_profile=lambda profile, host: {
+                        "host": host,
+                        "current_user": {
+                            "user_name": "adam.gurary@databricks.com",
+                            "id": "user-123",
+                        },
+                    },
+                    workspace_id_provider=lambda profile: target.workspace_id,
+                    state_path=root / "state" / "fevm.json",
+                    inventory_path=root / "live-fevm-before.json",
+                    sync_runner=lambda command: None,
+                    app_invoker=invoke,
+                    trace_proof_provider=prove,
+                    session_id_provider=lambda: PROBE_SESSION,
+                    now_ms=lambda: PROBE_STARTED_AT_MS,
+                )
+
+        self.assertEqual(observed, ["invoke", "prove"])
+        self.assertEqual(evidence.trace_proof_state, "PASS")
 
     def test_preauthorized_apply_skips_grants_api_and_records_live_proof_requirement(self):
         target = load_target("fevm")

@@ -8,35 +8,107 @@ from .config import TargetConfig, load_target
 from .databricks_cli import assert_profile, run_json
 
 
-_SENSITIVE_KEY_PARTS = ("token", "authorization", "secret")
+_RESOURCE_FIELDS = {
+    "current_users": ("id", "user_name", "userName", "active", "display_name"),
+    "apps": (
+        "app_id",
+        "id",
+        "name",
+        "url",
+        "owner",
+        "creator",
+        "app_status",
+        "compute_status",
+        "active_deployment",
+        "service_principal_client_id",
+    ),
+    "warehouses": ("id", "name", "state", "creator_name"),
+    "genie_spaces": ("space_id", "title", "owner"),
+    "experiments": ("experiment_id", "name", "lifecycle_stage", "tags"),
+    "uc_objects": (
+        "full_name",
+        "name",
+        "owner",
+        "catalog_name",
+        "schema_name",
+        "table_id",
+        "schema_id",
+        "table_type",
+    ),
+    "service_principals": ("id", "application_id", "display_name", "active"),
+    "effective_grants": ("principal", "privileges"),
+    "lakebase": ("name", "project_id", "status", "owner"),
+    "connections": (
+        "connection_id",
+        "connection_type",
+        "full_name",
+        "name",
+        "owner",
+        "read_only",
+    ),
+}
+_EXPERIMENT_TAG_KEYS = frozenset(
+    {
+        "team",
+        "mlflow.experiment.databricksTraceDestinationPath",
+        "mlflow.experiment.databricksTraceSpanStorageTable",
+    }
+)
 
 
-def sanitize_for_json(value: Any) -> Any:
-    """Copy JSON data while dropping credentials and redacted connection options."""
-    if isinstance(value, list):
-        return [sanitize_for_json(item) for item in value]
+def _project_status(value: Any) -> Any:
     if not isinstance(value, dict):
         return value
-
-    sanitized: dict[str, Any] = {}
-    for key, item in value.items():
-        normalized_key = str(key).lower().replace("-", "_")
-        if any(part in normalized_key for part in _SENSITIVE_KEY_PARTS):
-            continue
-        if normalized_key in {"connection_options", "options"} and _contains_redacted(item):
-            continue
-        sanitized[str(key)] = sanitize_for_json(item)
-    return sanitized
+    return {"state": value["state"]} if "state" in value else {}
 
 
-def _contains_redacted(value: Any) -> bool:
-    if isinstance(value, str):
-        return "redacted" in value.lower()
-    if isinstance(value, list):
-        return any(_contains_redacted(item) for item in value)
+def _project_experiment_tags(value: Any) -> Any:
     if isinstance(value, dict):
-        return any(_contains_redacted(item) for item in value.values())
-    return False
+        return {key: value[key] for key in _EXPERIMENT_TAG_KEYS if key in value}
+    if isinstance(value, list):
+        return [
+            {"key": item["key"], "value": item.get("value")}
+            for item in value
+            if isinstance(item, dict) and item.get("key") in _EXPERIMENT_TAG_KEYS
+        ]
+    return []
+
+
+def _project_active_deployment(value: Any) -> dict[str, Any]:
+    if not isinstance(value, dict):
+        return {}
+    projected = {
+        key: value[key]
+        for key in ("deployment_id", "source_code_path")
+        if key in value
+    }
+    if "status" in value:
+        projected["status"] = _project_status(value["status"])
+    return projected
+
+
+def project_inventory_record(resource_type: str, record: dict[str, Any]) -> dict[str, Any]:
+    """Return only allowlisted identity, state, and ownership evidence."""
+    try:
+        allowed_fields = _RESOURCE_FIELDS[resource_type]
+    except KeyError as error:
+        raise ValueError(f"Unknown inventory resource type: {resource_type}") from error
+
+    projected: dict[str, Any] = {}
+    for field_name in allowed_fields:
+        if field_name not in record:
+            continue
+        value = record[field_name]
+        if field_name in {"app_status", "compute_status", "status"}:
+            value = _project_status(value)
+        elif field_name == "active_deployment":
+            value = _project_active_deployment(value)
+        elif field_name == "tags":
+            value = _project_experiment_tags(value)
+        elif field_name == "privileges":
+            value = [item for item in value if isinstance(item, str)] if isinstance(value, list) else []
+        projected[field_name] = value
+    return projected
 
 
 def _records(response: dict | list, key: str) -> list[dict[str, Any]]:
@@ -47,12 +119,16 @@ def _records(response: dict | list, key: str) -> list[dict[str, Any]]:
 
 
 def _mark_records(
-    target: TargetConfig, records: list[dict[str, Any]], owned_names: tuple[str, ...] = ()
+    target: TargetConfig,
+    resource_type: str,
+    records: list[dict[str, Any]],
+    owned_names: tuple[str, ...] = (),
 ) -> list[dict[str, Any]]:
-    for record in records:
+    projected_records = [project_inventory_record(resource_type, record) for record in records]
+    for record in projected_records:
         if target.shared_mcp_read_only:
             record["mutation_allowed"] = record.get("name") in owned_names
-    return records
+    return projected_records
 
 
 def _inventory_records(profile: str, args: list[str], response_key: str) -> list[dict[str, Any]]:
@@ -84,15 +160,17 @@ def inventory_target(target_key: str) -> dict:
 
     inventory = {
         "workspace": {"key": target.key, "host": identity["host"], "workspace_id": target.workspace_id},
-        "current_user": identity["current_user"],
-        "apps": _mark_records(target, apps, (target.presenter_app_name,)),
-        "warehouses": _mark_records(target, warehouses),
-        "genie_spaces": _mark_records(target, genie_spaces),
-        "experiments": _mark_records(target, experiments),
-        "uc_objects": _mark_records(target, uc_objects),
-        "service_principals": _mark_records(target, service_principals),
-        "effective_grants": _mark_records(target, effective_grants),
-        "lakebase": _mark_records(target, lakebase),
-        "connections": _mark_records(target, connections),
+        "current_user": project_inventory_record("current_users", identity["current_user"]),
+        "apps": _mark_records(target, "apps", apps, (target.presenter_app_name,)),
+        "warehouses": _mark_records(target, "warehouses", warehouses),
+        "genie_spaces": _mark_records(target, "genie_spaces", genie_spaces),
+        "experiments": _mark_records(target, "experiments", experiments),
+        "uc_objects": _mark_records(target, "uc_objects", uc_objects),
+        "service_principals": _mark_records(
+            target, "service_principals", service_principals
+        ),
+        "effective_grants": _mark_records(target, "effective_grants", effective_grants),
+        "lakebase": _mark_records(target, "lakebase", lakebase),
+        "connections": _mark_records(target, "connections", connections),
     }
-    return sanitize_for_json(inventory)
+    return inventory

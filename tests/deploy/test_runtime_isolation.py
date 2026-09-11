@@ -223,6 +223,10 @@ class RuntimeToolIsolationTest(unittest.IsolatedAsyncioTestCase):
             "Never cite a tool that was unavailable, failed, or was only used in a prior turn",
             normalized_read_only,
         )
+        self.assertIn(
+            "Source lines must name every tool that returned evidence in the current turn",
+            normalized_read_only,
+        )
 
         with patch.dict(os.environ, {"SHARED_MCP_READ_ONLY": "false"}):
             writable = agent.create_agent().instructions

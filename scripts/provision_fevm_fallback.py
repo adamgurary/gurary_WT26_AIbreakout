@@ -23,7 +23,7 @@ if str(ROOT) not in sys.path:
 
 from deploy.config import TargetConfig, load_state, load_target
 from deploy.databricks_cli import assert_profile, run_json
-from deploy.inventory import sanitize_for_json
+from deploy.inventory import project_inventory_record
 from deploy.safety import assert_safe_fevm_grant, assert_safe_mutation
 
 
@@ -109,23 +109,21 @@ class ProvisionPlan:
         }
 
     def inventory_dict(self) -> dict[str, Any]:
-        return sanitize_for_json(
-            {
-                "shared_dependencies": self.shared_inventory,
-                "shared_ops_snapshot": self.shared_ops_before.as_dict(),
-                "trace_grants": {
-                    "mode": self.trace_grant_mode,
-                    "external_confirmation_recorded": (
-                        self.trace_grant_mode == PREAUTHORIZED_GRANT_MODE
-                    ),
-                    "authoritative_proof_required": (
-                        PREAUTHORIZED_GRANT_PROOF
-                        if self.trace_grant_mode == PREAUTHORIZED_GRANT_MODE
-                        else "direct_grant_readback"
-                    ),
-                },
-            }
-        )
+        return {
+            "shared_dependencies": self.shared_inventory,
+            "shared_ops_snapshot": self.shared_ops_before.as_dict(),
+            "trace_grants": {
+                "mode": self.trace_grant_mode,
+                "external_confirmation_recorded": (
+                    self.trace_grant_mode == PREAUTHORIZED_GRANT_MODE
+                ),
+                "authoritative_proof_required": (
+                    PREAUTHORIZED_GRANT_PROOF
+                    if self.trace_grant_mode == PREAUTHORIZED_GRANT_MODE
+                    else "direct_grant_readback"
+                ),
+            },
+        }
 
 
 @dataclass(frozen=True)
@@ -185,7 +183,12 @@ def _read_app(run_cli: RunCli, target: TargetConfig, name: str) -> dict[str, Any
     return app
 
 
-def _read_owned_app(run_cli: RunCli, target: TargetConfig) -> dict[str, Any] | None:
+def _read_owned_app(
+    run_cli: RunCli,
+    target: TargetConfig,
+    expected_owner: str,
+    saved_identity: tuple[str, str] | None = None,
+) -> dict[str, Any] | None:
     response = _run(run_cli, target.profile, ["apps", "list"])
     if isinstance(response, list):
         apps = response
@@ -206,6 +209,11 @@ def _read_owned_app(run_cli: RunCli, target: TargetConfig) -> dict[str, Any] | N
         f"https://{target.presenter_app_name}-{target.workspace_id}.aws.databricksapps.com"
     )
     _require_exact(app, "url", expected_url, "owned app")
+    _require_owned_app_metadata(target, app)
+    if saved_identity is None:
+        _require_authoritative_app_owner(app, expected_owner)
+    elif (app["id"], app["service_principal_client_id"]) != saved_identity:
+        raise RuntimeError("Owned app does not match the saved generated-state identity")
     return app
 
 
@@ -213,6 +221,8 @@ def _read_shared_inventory(
     run_cli: RunCli,
     target: TargetConfig,
     lakebase_inventory_provider: LakebaseInventoryProvider,
+    expected_owner: str,
+    saved_identity: tuple[str, str] | None,
 ) -> tuple[dict[str, dict[str, Any]], dict[str, Any] | None]:
     shared_apps = {
         "presenter_app": _read_app(run_cli, target, SHARED_PRESENTER),
@@ -271,14 +281,27 @@ def _read_shared_inventory(
         "ops_tasks_table": ops_table,
         "lakebase_projects": lakebase_projects,
     }
-    inventory = {
-        key: {
-            "mutation_allowed": False,
-            "record": sanitize_for_json(value),
-        }
-        for key, value in records.items()
+    resource_types = {
+        "presenter_app": "apps",
+        "storetime_app": "apps",
+        "opstask_app": "apps",
+        "genie_space": "genie_spaces",
+        "warehouse": "warehouses",
+        "catalog": "uc_objects",
+        "data_schema": "uc_objects",
+        "managed_connection": "connections",
+        "ops_tasks_table": "uc_objects",
+        "lakebase_projects": "lakebase",
     }
-    return inventory, _read_owned_app(run_cli, target)
+    inventory = {}
+    for key, value in records.items():
+        resource_type = resource_types[key]
+        if isinstance(value, list):
+            record = [project_inventory_record(resource_type, item) for item in value]
+        else:
+            record = project_inventory_record(resource_type, value)
+        inventory[key] = {"mutation_allowed": False, "record": record}
+    return inventory, _read_owned_app(run_cli, target, expected_owner, saved_identity)
 
 
 def canonical_ops_snapshot(rows: Iterable[dict[str, Any]]) -> SharedOpsSnapshot:
@@ -337,6 +360,14 @@ def _statement_rows(
 
 
 def _read_shared_ops_snapshot(run_cli: RunCli, target: TargetConfig) -> SharedOpsSnapshot:
+    warehouse = _require_mapping(
+        _run(run_cli, target.profile, ["warehouses", "get", target.warehouse_id]),
+        "warehouse",
+    )
+    _require_exact(warehouse, "id", str(target.warehouse_id), "warehouse")
+    if warehouse.get("state") != "RUNNING":
+        raise RuntimeError("Protected shared warehouse must already be RUNNING before SQL")
+
     full_name = f"{target.catalog}.{target.data_schema}.ops_tasks"
     payload = {
         "warehouse_id": target.warehouse_id,
@@ -471,10 +502,58 @@ def _assert_target_binding(
     target: TargetConfig,
     verify_profile: VerifyProfile,
     workspace_id_provider: WorkspaceIdProvider,
-) -> None:
-    verify_profile(target.profile, target.host)
+) -> dict[str, Any]:
+    identity = verify_profile(target.profile, target.host)
     if str(workspace_id_provider(target.profile)) != target.workspace_id:
         raise RuntimeError("Databricks workspace ID does not match the FEVM target")
+    if not isinstance(identity, dict):
+        raise RuntimeError("Databricks profile identity is malformed")
+    return identity
+
+
+def _authenticated_user_name(identity: dict[str, Any]) -> str:
+    current_user = identity.get("current_user")
+    if not isinstance(current_user, dict):
+        raise RuntimeError("Databricks current-user identity is malformed")
+    user_name = current_user.get("user_name", current_user.get("userName"))
+    if not isinstance(user_name, str) or not user_name:
+        raise RuntimeError("Databricks current-user name is malformed")
+    return user_name
+
+
+def _require_authoritative_app_owner(app: dict[str, Any], expected_owner: str) -> None:
+    if expected_owner not in {app.get("creator"), app.get("owner")}:
+        raise RuntimeError("Owned app ownership does not match the authenticated user")
+
+
+def _require_uuid(value: Any, label: str) -> str:
+    try:
+        canonical = str(uuid.UUID(value)) if isinstance(value, str) else ""
+    except (ValueError, AttributeError):
+        canonical = ""
+    if not canonical or canonical != value.lower():
+        raise RuntimeError(f"Owned app is missing concrete UUID {label}")
+    return value
+
+
+def _load_saved_owned_identity(
+    target: TargetConfig, state_path: Path | None
+) -> tuple[str, str] | None:
+    if state_path is None or not state_path.exists():
+        return None
+    try:
+        state = json.loads(state_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as error:
+        raise RuntimeError("Generated FEVM state is unreadable") from error
+    if not isinstance(state, dict) or state.get("target") != target.key:
+        raise RuntimeError("Generated FEVM state does not match the target")
+    return (
+        _require_uuid(state.get("presenter_app_id"), "presenter_app_id"),
+        _require_uuid(
+            state.get("presenter_service_principal_client_id"),
+            "presenter_service_principal_client_id",
+        ),
+    )
 
 
 def _require_owned_app_metadata(target: TargetConfig, app: dict[str, Any]) -> dict[str, Any]:
@@ -484,10 +563,18 @@ def _require_owned_app_metadata(target: TargetConfig, app: dict[str, Any]) -> di
     )
     _require_exact(app, "url", expected_url, "owned app")
     for field_name in ("id", "service_principal_client_id"):
-        value = app.get(field_name)
-        if not isinstance(value, str) or not value or "\x00" in value:
-            raise RuntimeError(f"Owned app is missing concrete {field_name}")
+        _require_uuid(app.get(field_name), field_name)
     return app
+
+
+def _require_owned_app_identity(
+    app: dict[str, Any], expected_app_id: str, expected_principal: str
+) -> None:
+    if (
+        app.get("id") != expected_app_id
+        or app.get("service_principal_client_id") != expected_principal
+    ):
+        raise RuntimeError("Owned app identity changed during reconciliation")
 
 
 def _ensure_owned_app(
@@ -495,11 +582,16 @@ def _ensure_owned_app(
     run_cli: RunCli,
     verify_profile: VerifyProfile,
     workspace_id_provider: WorkspaceIdProvider,
+    state_path: Path,
 ) -> tuple[dict[str, Any], bool]:
-    _assert_target_binding(target, verify_profile, workspace_id_provider)
+    identity = _assert_target_binding(target, verify_profile, workspace_id_provider)
+    expected_owner = _authenticated_user_name(identity)
     assert_safe_mutation(target, "app", target.presenter_app_name)
-    current = _read_owned_app(run_cli, target)
+    saved_identity = _load_saved_owned_identity(target, state_path)
+    current = _read_owned_app(run_cli, target, expected_owner, saved_identity)
     created = current is None
+    if created and saved_identity is not None:
+        raise RuntimeError("Saved owned app identity is missing from the workspace")
     if created:
         _run(
             run_cli,
@@ -511,11 +603,17 @@ def _ensure_owned_app(
             },
         )
     app = _read_app(run_cli, target, target.presenter_app_name)
-    return _require_owned_app_metadata(target, app), created
+    app = _require_owned_app_metadata(target, app)
+    if saved_identity is None:
+        _require_authoritative_app_owner(app, expected_owner)
+    elif (app["id"], app["service_principal_client_id"]) != saved_identity:
+        raise RuntimeError("Owned app does not match the saved generated-state identity")
+    return app, created
 
 
 def _ensure_app_scopes(
     target: TargetConfig,
+    expected_app_id: str,
     expected_principal: str,
     run_cli: RunCli,
     verify_profile: VerifyProfile,
@@ -526,8 +624,7 @@ def _ensure_app_scopes(
     current = _require_owned_app_metadata(
         target, _read_app(run_cli, target, target.presenter_app_name)
     )
-    if current["service_principal_client_id"] != expected_principal:
-        raise RuntimeError("Owned app principal changed during reconciliation")
+    _require_owned_app_identity(current, expected_app_id, expected_principal)
     changed = tuple(current.get("user_api_scopes", ())) != APP_SCOPES
     if changed:
         _run(
@@ -539,8 +636,7 @@ def _ensure_app_scopes(
     app = _require_owned_app_metadata(
         target, _read_app(run_cli, target, target.presenter_app_name)
     )
-    if app["service_principal_client_id"] != expected_principal:
-        raise RuntimeError("Owned app principal changed after scope reconciliation")
+    _require_owned_app_identity(app, expected_app_id, expected_principal)
     if set(app.get("user_api_scopes", ())) != set(APP_SCOPES):
         raise RuntimeError("Owned app OBO scopes were not reconciled")
     return app, changed
@@ -574,6 +670,7 @@ def _principal_privileges(response: dict | list, principal: str) -> set[str]:
 
 def _ensure_grant(
     target: TargetConfig,
+    expected_app_id: str,
     expected_principal: str,
     securable_type: str,
     full_name: str,
@@ -587,8 +684,7 @@ def _ensure_grant(
     app = _require_owned_app_metadata(
         target, _read_app(run_cli, target, target.presenter_app_name)
     )
-    if app["service_principal_client_id"] != expected_principal:
-        raise RuntimeError("Owned app principal changed before trace grant")
+    _require_owned_app_identity(app, expected_app_id, expected_principal)
 
     args = ["grants", "get", securable_type, full_name]
     current = _run(run_cli, target.profile, args)
@@ -778,9 +874,11 @@ def _invoke_probe_when_ready(
     app_url: str,
     payload: dict[str, Any],
     waiter: Waiter,
+    before_attempt: Callable[[], None],
 ) -> dict[str, Any]:
     for attempt in range(4):
         try:
+            before_attempt()
             return app_invoker(profile, app_url, payload)
         except TransientAppInvocationError:
             if attempt == 3:
@@ -911,6 +1009,43 @@ def _status_state(value: Any, label: str) -> str:
     return state
 
 
+def _deployment_id(deployment: dict[str, Any]) -> str:
+    deployment_id = deployment.get("deployment_id")
+    if not isinstance(deployment_id, str) or not deployment_id or "\x00" in deployment_id:
+        raise RuntimeError("Requested deployment response has no concrete deployment ID")
+    return deployment_id
+
+
+def _wait_for_exact_deployment(
+    run_cli: RunCli,
+    target: TargetConfig,
+    deployment_id: str,
+    workspace_path: str,
+    waiter: Waiter,
+) -> dict[str, Any]:
+    for attempt in range(60):
+        deployment = _require_mapping(
+            _run(
+                run_cli,
+                target.profile,
+                ["apps", "get-deployment", target.presenter_app_name, deployment_id],
+            ),
+            "requested deployment",
+        )
+        if _deployment_id(deployment) != deployment_id:
+            raise RuntimeError("Polled deployment did not match the requested deployment ID")
+        if deployment.get("source_code_path") != workspace_path:
+            raise RuntimeError("Requested deployment source path did not match the owned sync path")
+        state = _status_state(deployment.get("status"), "deployment")
+        if state == "SUCCEEDED":
+            return deployment
+        if state in {"FAILED", "CANCELLED", "ERROR"}:
+            raise RuntimeError("Requested deployment did not succeed")
+        if attempt < 59:
+            waiter(2.0)
+    raise RuntimeError("Requested deployment did not reach SUCCEEDED")
+
+
 def apply_provision_plan(
     plan: ProvisionPlan,
     *,
@@ -925,18 +1060,22 @@ def apply_provision_plan(
     session_id_provider: SessionIdProvider = lambda: uuid.uuid4().hex,
     now_ms: NowMs = lambda: time.time_ns() // 1_000_000,
     app_ready_waiter: Waiter = time.sleep,
+    deployment_waiter: Waiter = time.sleep,
 ) -> ApplyEvidence:
     if plan.shared_ops_before != plan.shared_ops_after_dry_run:
         raise RuntimeError("Refusing apply with a changed shared OpsTask snapshot")
     target = load_target("fevm")
+    _assert_target_binding(target, verify_profile, workspace_id_provider)
     _write_json_atomic(inventory_path, plan.inventory_dict())
 
     app, created = _ensure_owned_app(
-        target, run_cli, verify_profile, workspace_id_provider
+        target, run_cli, verify_profile, workspace_id_provider, state_path
     )
+    app_id = app["id"]
     principal = app["service_principal_client_id"]
     app, scopes_changed = _ensure_app_scopes(
         target,
+        app_id,
         principal,
         run_cli,
         verify_profile,
@@ -950,6 +1089,7 @@ def apply_provision_plan(
     elif plan.trace_grant_mode == LOCAL_GRANT_MODE:
         catalog_changed = _ensure_grant(
             target,
+            app_id,
             principal,
             "catalog",
             target.catalog,
@@ -960,6 +1100,7 @@ def apply_provision_plan(
         )
         schema_changed = _ensure_grant(
             target,
+            app_id,
             principal,
             "schema",
             trace_schema,
@@ -976,8 +1117,7 @@ def apply_provision_plan(
     current_app = _require_owned_app_metadata(
         target, _read_app(run_cli, target, target.presenter_app_name)
     )
-    if current_app["service_principal_client_id"] != principal:
-        raise RuntimeError("Owned app principal changed before generated state write")
+    _require_owned_app_identity(current_app, app_id, principal)
     _write_json_atomic(state_path, _generated_state(target, current_app))
 
     from deploy.render import render_deployment
@@ -1031,27 +1171,34 @@ def apply_provision_plan(
     before_deploy = _require_owned_app_metadata(
         target, _read_app(run_cli, target, target.presenter_app_name)
     )
-    if before_deploy["service_principal_client_id"] != principal:
-        raise RuntimeError("Owned app principal changed before deployment")
-    _run(
+    _require_owned_app_identity(before_deploy, app_id, principal)
+    deploy_response = _require_mapping(
+        _run(
+            run_cli,
+            target.profile,
+            [
+                "apps",
+                "deploy",
+                target.presenter_app_name,
+                "--source-code-path",
+                workspace_path,
+            ],
+        ),
+        "requested deployment",
+    )
+    requested_deployment = _wait_for_exact_deployment(
         run_cli,
-        target.profile,
-        [
-            "apps",
-            "deploy",
-            target.presenter_app_name,
-            "--source-code-path",
-            workspace_path,
-        ],
+        target,
+        _deployment_id(deploy_response),
+        workspace_path,
+        deployment_waiter,
     )
     deployed = _require_owned_app_metadata(
         target, _read_app(run_cli, target, target.presenter_app_name)
     )
-    if deployed["service_principal_client_id"] != principal:
-        raise RuntimeError("Owned app principal changed after deployment")
-    active_deployment = deployed.get("active_deployment")
+    _require_owned_app_identity(deployed, app_id, principal)
     deployment_state = _status_state(
-        active_deployment.get("status") if isinstance(active_deployment, dict) else None,
+        requested_deployment.get("status"),
         "deployment",
     )
     app_state = _status_state(deployed.get("app_status"), "application")
@@ -1062,40 +1209,36 @@ def apply_provision_plan(
             "Owned app did not reach the required deployment/application/compute states"
         )
 
-    if plan.trace_grant_mode == PREAUTHORIZED_GRANT_MODE:
-        session_id = session_id_provider()
-        if not isinstance(session_id, str) or not session_id or "\x00" in session_id:
-            raise RuntimeError("Trace probe session identifier is invalid")
-        probe_started_at_ms = now_ms()
-        if not isinstance(probe_started_at_ms, int) or isinstance(probe_started_at_ms, bool):
-            raise RuntimeError("Trace probe start time is invalid")
-        probe_payload = {
-            "input": [{"role": "user", "content": TRACE_PROBE_PROMPT}],
-            "custom_inputs": {"session_id": session_id},
-        }
-        invocation = _invoke_probe_when_ready(
-            app_invoker,
-            target.profile,
-            deployed["url"],
-            probe_payload,
-            app_ready_waiter,
-        )
-        _validate_probe_invocation(invocation)
-        trace_request = {
-            "profile": target.profile,
-            "experiment_name": _generated_state(target, deployed)["mlflow_experiment_name"],
-            "trace_location": (
-                f"{target.catalog}.{target.trace_schema}.{TRACE_TABLE_PREFIX}"
-            ),
-            "warehouse_id": target.warehouse_id,
-            "session_id": session_id,
-            "not_before_ms": probe_started_at_ms,
-        }
-        proof = trace_proof_provider(trace_request)
-        _validate_live_trace_proof(trace_request, proof)
-        trace_proof_state = "PASS"
-    else:
-        trace_proof_state = "DIRECT_GRANT_READBACK"
+    session_id = session_id_provider()
+    if not isinstance(session_id, str) or not session_id or "\x00" in session_id:
+        raise RuntimeError("Trace probe session identifier is invalid")
+    probe_started_at_ms = now_ms()
+    if not isinstance(probe_started_at_ms, int) or isinstance(probe_started_at_ms, bool):
+        raise RuntimeError("Trace probe start time is invalid")
+    probe_payload = {
+        "input": [{"role": "user", "content": TRACE_PROBE_PROMPT}],
+        "custom_inputs": {"session_id": session_id},
+    }
+    invocation = _invoke_probe_when_ready(
+        app_invoker,
+        target.profile,
+        deployed["url"],
+        probe_payload,
+        app_ready_waiter,
+        lambda: _assert_target_binding(target, verify_profile, workspace_id_provider),
+    )
+    _validate_probe_invocation(invocation)
+    trace_request = {
+        "profile": target.profile,
+        "experiment_name": _generated_state(target, deployed)["mlflow_experiment_name"],
+        "trace_location": f"{target.catalog}.{target.trace_schema}.{TRACE_TABLE_PREFIX}",
+        "warehouse_id": target.warehouse_id,
+        "session_id": session_id,
+        "not_before_ms": probe_started_at_ms,
+    }
+    proof = trace_proof_provider(trace_request)
+    _validate_live_trace_proof(trace_request, proof)
+    trace_proof_state = "PASS"
 
     mutated: list[str] = []
     if created:
@@ -1128,15 +1271,19 @@ def build_provision_plan(
     workspace_id_provider: WorkspaceIdProvider = _workspace_id_from_sdk,
     lakebase_inventory_provider: LakebaseInventoryProvider = _lakebase_inventory_from_sdk,
     preauthorized_trace_grants: bool = False,
+    state_path: Path | None = None,
 ) -> ProvisionPlan:
     target = load_target("fevm")
-    verify_profile(target.profile, target.host)
-    actual_workspace_id = str(workspace_id_provider(target.profile))
-    if actual_workspace_id != target.workspace_id:
-        raise RuntimeError("Databricks workspace ID does not match the FEVM target")
+    identity = _assert_target_binding(target, verify_profile, workspace_id_provider)
+    expected_owner = _authenticated_user_name(identity)
+    saved_identity = _load_saved_owned_identity(target, state_path)
 
     shared_inventory, owned_app = _read_shared_inventory(
-        run_cli, target, lakebase_inventory_provider
+        run_cli,
+        target,
+        lakebase_inventory_provider,
+        expected_owner,
+        saved_identity,
     )
     before = _read_shared_ops_snapshot(run_cli, target)
     actions = _actions(target, owned_app, preauthorized_trace_grants)
@@ -1177,10 +1324,16 @@ def _parse_arguments(argv: list[str] | None = None) -> argparse.Namespace:
 
 def main() -> None:
     arguments = _parse_arguments()
+    state_path = ROOT / "deploy" / "state" / "fevm.json"
     plan = build_provision_plan(
-        preauthorized_trace_grants=arguments.preauthorized_trace_grants
+        preauthorized_trace_grants=arguments.preauthorized_trace_grants,
+        state_path=state_path,
     )
-    result = plan.as_dict() if arguments.dry_run else apply_provision_plan(plan).as_dict()
+    result = (
+        plan.as_dict()
+        if arguments.dry_run
+        else apply_provision_plan(plan, state_path=state_path).as_dict()
+    )
     print(json.dumps(result, indent=2, sort_keys=True))
 
 

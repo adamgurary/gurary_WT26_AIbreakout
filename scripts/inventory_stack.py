@@ -6,7 +6,7 @@ import argparse
 import json
 from pathlib import Path
 
-from deploy.inventory import inventory_target, sanitize_for_json
+from deploy.inventory import inventory_target
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -20,7 +20,7 @@ def main() -> None:
 
     output = args.output or ROOT / "deploy" / "inventory" / f"live-{args.target}.json"
     output.parent.mkdir(parents=True, exist_ok=True)
-    inventory = sanitize_for_json(inventory_target(args.target))
+    inventory = inventory_target(args.target)
     output.write_text(json.dumps(inventory, indent=2, sort_keys=True) + "\n", encoding="utf-8")
     print(output)
 

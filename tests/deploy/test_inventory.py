@@ -126,6 +126,13 @@ class InventoryTargetTest(unittest.TestCase):
                         "owner": "adam.gurary@databricks.com",
                         "app_status": {"state": "RUNNING"},
                         "oauth_access_token": "never-persist",
+                        "oauthMetadata": {"clientId": "oauth-metadata-value"},
+                        "password": "password-value",
+                        "private-key": "private-key-value",
+                        "privateKeyPem": "private-key-pem-value",
+                        "access_key_id": "access-key-value",
+                        "authorizationHeader": "authorization-value",
+                        "connectionOptions": {"credential": "connection-option-value"},
                     }
                 ]
             },
@@ -172,6 +179,11 @@ class InventoryTargetTest(unittest.TestCase):
                         "connection_type": "HTTP",
                         "options": {"authorization": "Bearer secret", "token": "[REDACTED]"},
                         "client_secret": "never-persist",
+                        "oauth_metadata": {"client_id": "oauth-client-value"},
+                        "password_value": "password-value",
+                        "private_key": "private-key-value",
+                        "accessKey": "access-key-value",
+                        "connection_options": {"password": "connection-password-value"},
                     }
                 ]
             },
@@ -183,7 +195,12 @@ class InventoryTargetTest(unittest.TestCase):
 
         with patch("deploy.inventory.assert_profile", return_value={
             "host": "https://fevm-worldtour-ai.cloud.databricks.com",
-            "current_user": {"user_name": "adam.gurary@databricks.com", "id": "123"},
+            "current_user": {
+                "user_name": "adam.gurary@databricks.com",
+                "id": "123",
+                "password": "identity-password-value",
+                "oauthMetadata": {"token": "identity-oauth-value"},
+            },
         }), patch("deploy.inventory.run_json", side_effect=fake_run_json):
             inventory = inventory_target("fevm")
 
@@ -211,8 +228,31 @@ class InventoryTargetTest(unittest.TestCase):
             )
             for item in inventory[category]
         ))
+        self.assertEqual(
+            set(inventory["apps"][0]),
+            {"app_id", "app_status", "mutation_allowed", "name", "owner", "url"},
+        )
+        self.assertEqual(
+            set(inventory["connections"][0]),
+            {"connection_type", "mutation_allowed", "name"},
+        )
         serialized = json.dumps(inventory)
-        for secret in ("never-persist", "Bearer secret", "[REDACTED]"):
+        for secret in (
+            "never-persist",
+            "Bearer secret",
+            "[REDACTED]",
+            "oauth-metadata-value",
+            "oauth-client-value",
+            "password-value",
+            "private-key-value",
+            "private-key-pem-value",
+            "access-key-value",
+            "authorization-value",
+            "connection-option-value",
+            "connection-password-value",
+            "identity-password-value",
+            "identity-oauth-value",
+        ):
             self.assertNotIn(secret, serialized)
 
 

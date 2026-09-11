@@ -176,8 +176,9 @@ def _validate_branch(branch: Branch) -> Branch:
 
 
 def _branch_has_no_expiry(branch: Branch) -> bool:
-    if getattr(getattr(branch, "spec", None), "no_expiry", None) is True:
-        return True
+    no_expiry = getattr(getattr(branch, "spec", None), "no_expiry", None)
+    if no_expiry is not None:
+        return no_expiry is True
     status = getattr(branch, "status", None)
     return status is not None and getattr(status, "expire_time", None) is None
 
@@ -214,10 +215,12 @@ def _ensure_branch(workspace: WorkspaceClient, target: TargetConfig) -> Branch:
         branch = _find_branch(workspace)
         if branch is None:
             raise RuntimeError("Created Lakebase branch was missing from readback")
-    elif (
-        _setting(branch, "is_protected") is not True
-        or not _branch_has_no_expiry(branch)
-    ):
+    elif not _branch_has_no_expiry(branch):
+        raise RuntimeError(
+            "Owned Lakebase branch is expiring and cannot clear expiration in place "
+            "with the supported branch update API"
+        )
+    elif _setting(branch, "is_protected") is not True:
         operation = workspace.postgres.update_branch(
             name=BRANCH_NAME,
             branch=Branch(

@@ -24,6 +24,7 @@ from databricks.sdk.service.postgres import (
     Project,
     ProjectSpec,
     ProjectStatus,
+    Timestamp,
 )
 
 from deploy.config import load_target
@@ -148,7 +149,22 @@ class FakePostgres:
     def update_branch(self, name: str, branch: Branch, update_mask: FieldMask):
         self.assert_parent(name, BRANCH_NAME)
         self.create_calls.append(("branch_update", branch, update_mask))
-        updated = globals()["branch"]()
+        current = self.branches[0]
+        updated = Branch(
+            name=BRANCH_NAME,
+            branch_id=BRANCH_ID,
+            parent=PROJECT_NAME,
+            spec=BranchSpec(
+                expire_time=current.spec.expire_time,
+                is_protected=branch.spec.is_protected,
+                no_expiry=current.spec.no_expiry,
+            ),
+            status=BranchStatus(
+                branch_id=BRANCH_ID,
+                expire_time=current.status.expire_time,
+                is_protected=branch.spec.is_protected,
+            ),
+        )
         self.branches = [updated]
         operation = CompletedOperation(updated)
         self.operations.append(operation)
@@ -384,6 +400,36 @@ class LakebaseReconciliationTest(unittest.TestCase):
             "deploy.lakebase.psycopg.connect", side_effect=database_boundary.connect
         ):
             ensure_lakebase(FakeWorkspace(postgres), load_target("field_eng"))
+
+        self.assertEqual(postgres.create_calls, [])
+
+    def test_expiring_branch_fails_before_unsupported_update(self):
+        expires = Timestamp(seconds=1893456000)
+        postgres = FakePostgres()
+        postgres.branches = [
+            Branch(
+                name=BRANCH_NAME,
+                branch_id=BRANCH_ID,
+                parent=PROJECT_NAME,
+                spec=BranchSpec(
+                    expire_time=expires,
+                    is_protected=True,
+                    no_expiry=False,
+                ),
+                status=BranchStatus(
+                    branch_id=BRANCH_ID,
+                    expire_time=expires,
+                    is_protected=True,
+                ),
+            )
+        ]
+
+        with patch("deploy.lakebase.assert_profile", side_effect=identity):
+            with self.assertRaisesRegex(
+                RuntimeError,
+                "cannot clear expiration in place",
+            ):
+                ensure_lakebase(FakeWorkspace(postgres), load_target("field_eng"))
 
         self.assertEqual(postgres.create_calls, [])
 

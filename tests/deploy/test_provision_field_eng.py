@@ -341,6 +341,18 @@ class FieldEngReconciliationTest(unittest.TestCase):
                 lambda _seconds: None,
             )
 
+    def test_storetime_verification_rejects_fraction_below_float_precision(self):
+        boundary = MutableBoundary()
+        boundary.storetime_values = ["42.000000000000000001", "28", "14"]
+
+        with self.assertRaisesRegex(RuntimeError, "did not match 42/28/14"):
+            self.field_eng._verify_private_data(
+                boundary,
+                self.field_eng.load_target("field_eng"),
+                WAREHOUSE_ID,
+                lambda _seconds: None,
+            )
+
     def test_schema_create_uses_the_installed_cli_positional_flag_shape(self):
         boundary = MutableBoundary()
 

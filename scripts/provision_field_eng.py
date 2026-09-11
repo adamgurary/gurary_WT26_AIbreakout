@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 from dataclasses import asdict, dataclass, field
+from decimal import Decimal, InvalidOperation
 import argparse
 import json
 import os
@@ -550,14 +551,14 @@ def _verify_private_data(
         raise RuntimeError("Store 104 StoreTime fact was not unique")
     try:
         storetime_values = tuple(
-            float(storetime_rows[0][field])
+            Decimal(str(storetime_rows[0][field]))
             for field in (
                 "scheduled_training_hours",
                 "completed_training_hours",
                 "converted_training_hours",
             )
         )
-    except (KeyError, TypeError, ValueError) as error:
+    except (InvalidOperation, KeyError, TypeError, ValueError) as error:
         raise RuntimeError("Store 104 StoreTime fact is malformed") from error
     if storetime_values != (42, 28, 14):
         raise RuntimeError("Store 104 StoreTime fact did not match 42/28/14")

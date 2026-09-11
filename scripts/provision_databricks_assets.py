@@ -3,16 +3,48 @@ from __future__ import annotations
 
 import argparse
 import datetime as dt
-import json
 import random
 import re
-import subprocess
+import sys
 import time
 from pathlib import Path
 from typing import Iterable
 
 ROOT = Path(__file__).resolve().parents[1]
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
+
+from deploy.config import load_target
+from deploy.databricks_cli import assert_profile, run_json
+
+
 IDENTIFIER = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
+TABLE_REFERENCE = re.compile(
+    r"\b([A-Za-z_][A-Za-z0-9_]*\.[A-Za-z_][A-Za-z0-9_]*\.[A-Za-z_][A-Za-z0-9_]*)\b"
+)
+FIELD_PROFILE = "e2-demo-field-eng"
+FIELD_WORKSPACE_ID = "1444828305810485"
+FIELD_WAREHOUSE_NAME = "gurary_bobabricks_" "warehouse"
+FIELD_CATALOG = "gurary_" "catalog"
+FIELD_SCHEMA = "gurary_bobabricks_store_" "ops"
+FIELD_PREFIX = "gurary_"
+TABLE_DDL = {
+    "store_metrics": """region STRING, store_id STRING, store_name STRING, sales_vs_plan_pct DOUBLE, training_completion_pct DOUBLE, avg_wait_minutes DOUBLE, customer_satisfaction DOUBLE""",
+    "stores": """store_id INT, store_name STRING, region STRING, district STRING, city STRING, state STRING, area_leader STRING, opened_date DATE, seat_count INT, weekly_sales_target DOUBLE""",
+    "training_courses": """course_id STRING, course_name STRING, category STRING, required_for_roles STRING, target_hours DOUBLE, recurrence STRING, is_mandatory BOOLEAN""",
+    "employees": """employee_id STRING, store_id INT, full_name STRING, role STRING, hire_date DATE, status STRING, employment_type STRING""",
+    "training_progress": """record_id STRING, store_id INT, employee_id STRING, course_id STRING, status STRING, assigned_date DATE, due_date DATE, completed_date DATE, completed_hours DOUBLE, target_hours DOUBLE""",
+    "store_weekly_metrics": """store_id INT, week_start_date DATE, region STRING, net_sales DOUBLE, weekly_sales_target DOUBLE, sales_vs_plan_pct DOUBLE, training_completion_pct DOUBLE, avg_wait_minutes DOUBLE, customer_satisfaction DOUBLE, scheduled_training_hours DOUBLE, actual_training_hours DOUBLE, converted_training_hours DOUBLE, conversion_reason STRING""",
+    "schedules": """store_id INT, week STRING, scheduled_training_hours DOUBLE, completed_training_hours DOUBLE, converted_training_hours DOUBLE, conversion_reason STRING""",
+    "training_events": """store_id INT, week STRING, scheduled_training_hours DOUBLE, completed_training_hours DOUBLE, converted_training_hours DOUBLE, conversion_reason STRING""",
+    "storetime_shifts": """shift_id STRING, store_id INT, shift_date DATE, daypart STRING, scheduled_partners INT, actual_partners INT, coverage_area STRING""",
+    "inventory": """store_id INT, ingredient STRING, on_hand_units DOUBLE, forecast_7d_units DOUBLE, reorder_eta_days DOUBLE, stockout_risk STRING, supplier STRING""",
+    "customer_feedback": """feedback_id STRING, store_id INT, feedback_date DATE, topic STRING, rating INT, comment_summary STRING""",
+    "ops_tasks": """task_id STRING, store_id INT, title STRING, description STRING, category STRING, severity STRING, status STRING, created_date DATE, owner STRING""",
+}
+FIELD_TABLES = frozenset(
+    f"{FIELD_CATALOG}.{FIELD_SCHEMA}.{FIELD_PREFIX}{table}" for table in TABLE_DDL
+)
 
 
 def qualified_table(namespace: str, prefix: str, table: str) -> str:
@@ -32,14 +64,68 @@ def qualified_table(namespace: str, prefix: str, table: str) -> str:
 
 
 def run_databricks(profile: str, args: list[str], payload: dict | None = None) -> dict:
-    command = ["databricks", "--profile", profile, *args, "-o", "json"]
-    if payload is not None:
-        command.extend(["--json", json.dumps(payload)])
-    output = subprocess.check_output(command, text=True)
-    return json.loads(output) if output.strip() else {}
+    response = run_json(profile, args, payload)
+    if not isinstance(response, dict):
+        raise RuntimeError("Databricks CLI response must be an object")
+    return response
+
+
+def _workspace_id_from_sdk(profile: str) -> str:
+    from databricks.sdk import WorkspaceClient
+
+    return str(WorkspaceClient(profile=profile).get_workspace_id())
+
+
+def _records(response: dict | list, key: str) -> list[dict]:
+    value = response if isinstance(response, list) else response.get(key, [])
+    if not isinstance(value, list) or not all(isinstance(record, dict) for record in value):
+        raise RuntimeError(f"Databricks {key} response is malformed")
+    return [dict(record) for record in value]
+
+
+def _guard_private_sql_mutation(profile: str, warehouse_id: str, statement: str) -> None:
+    if profile != FIELD_PROFILE:
+        return
+    references = TABLE_REFERENCE.findall(statement)
+    if not references or references[0] not in FIELD_TABLES:
+        raise ValueError("Refusing mutation of a non-owned private table")
+    if any(reference not in FIELD_TABLES for reference in references):
+        raise ValueError("Refusing SQL that references a non-owned private table")
+
+    target = load_target("field_eng")
+    expected_contract = (
+        target.profile == FIELD_PROFILE
+        and target.workspace_id == FIELD_WORKSPACE_ID
+        and target.catalog == FIELD_CATALOG
+        and target.data_schema == FIELD_SCHEMA
+        and target.table_prefix == FIELD_PREFIX
+        and target.warehouse_name == FIELD_WAREHOUSE_NAME
+    )
+    if not expected_contract:
+        raise RuntimeError("Field-eng target configuration does not match the SQL safety contract")
+    assert_profile(target.profile, target.host)
+    if _workspace_id_from_sdk(target.profile) != target.workspace_id:
+        raise RuntimeError("Databricks workspace ID does not match the field-eng target")
+
+    warehouse = run_json(target.profile, ["warehouses", "get", warehouse_id])
+    if (
+        not isinstance(warehouse, dict)
+        or str(warehouse.get("id")) != warehouse_id
+        or warehouse.get("name") != FIELD_WAREHOUSE_NAME
+    ):
+        raise RuntimeError("SQL warehouse does not match the exact owned warehouse")
+    schema_name = f"{FIELD_CATALOG}.{FIELD_SCHEMA}"
+    schema = run_json(target.profile, ["schemas", "get", schema_name])
+    if not isinstance(schema, dict) or schema.get("full_name") != schema_name:
+        raise RuntimeError("SQL schema does not match the exact owned schema")
+    _records(
+        run_json(target.profile, ["tables", "list", FIELD_CATALOG, FIELD_SCHEMA]),
+        "tables",
+    )
 
 
 def execute_sql(profile: str, warehouse_id: str, statement: str) -> dict:
+    _guard_private_sql_mutation(profile, warehouse_id, statement)
     response = run_databricks(
         profile,
         ["api", "post", "/api/2.0/sql/statements"],
@@ -197,6 +283,20 @@ def build_seed_data() -> dict[str, tuple[list[str], list[tuple]]]:
         ("OPS-2210", 117, "Confirm espresso reorder ETA", "Escalate Cascade Roasters delivery for Portland Pearl.", "inventory", "high", "draft", base_week, "Maria Chen"),
     ]
 
+    store_metrics = [
+        (
+            row[2],
+            str(row[0]),
+            store_by_id[row[0]][1],
+            row[5],
+            row[6],
+            row[7],
+            row[8],
+        )
+        for row in weekly_metrics
+        if row[1] == base_week
+    ]
+
     return {
         "stores": (["store_id", "store_name", "region", "district", "city", "state", "area_leader", "opened_date", "seat_count", "weekly_sales_target"], stores),
         "training_courses": (["course_id", "course_name", "category", "required_for_roles", "target_hours", "recurrence", "is_mandatory"], courses),
@@ -209,6 +309,7 @@ def build_seed_data() -> dict[str, tuple[list[str], list[tuple]]]:
         "inventory": (["store_id", "ingredient", "on_hand_units", "forecast_7d_units", "reorder_eta_days", "stockout_risk", "supplier"], inventory),
         "customer_feedback": (["feedback_id", "store_id", "feedback_date", "topic", "rating", "comment_summary"], feedback),
         "ops_tasks": (["task_id", "store_id", "title", "description", "category", "severity", "status", "created_date", "owner"], ops_tasks),
+        "store_metrics": (["region", "store_id", "store_name", "sales_vs_plan_pct", "training_completion_pct", "avg_wait_minutes", "customer_satisfaction"], store_metrics),
     }
 
 
@@ -224,34 +325,26 @@ def main() -> None:
 
     if not args.table_prefix and not args.allow_shared_source:
         parser.error("--table-prefix must be non-empty unless --allow-shared-source is set")
+    if not args.allow_shared_source and (
+        args.profile,
+        args.catalog,
+        args.schema,
+        args.table_prefix,
+    ) != (FIELD_PROFILE, FIELD_CATALOG, FIELD_SCHEMA, FIELD_PREFIX):
+        parser.error("private provisioning arguments do not match the field-eng safety contract")
 
     namespace = f"{args.catalog}.{args.schema}"
-    ddl = {
-        "store_metrics": """region STRING, store_id STRING, store_name STRING, sales_vs_plan_pct DOUBLE, training_completion_pct DOUBLE, avg_wait_minutes DOUBLE, customer_satisfaction DOUBLE""",
-        "stores": """store_id INT, store_name STRING, region STRING, district STRING, city STRING, state STRING, area_leader STRING, opened_date DATE, seat_count INT, weekly_sales_target DOUBLE""",
-        "training_courses": """course_id STRING, course_name STRING, category STRING, required_for_roles STRING, target_hours DOUBLE, recurrence STRING, is_mandatory BOOLEAN""",
-        "employees": """employee_id STRING, store_id INT, full_name STRING, role STRING, hire_date DATE, status STRING, employment_type STRING""",
-        "training_progress": """record_id STRING, store_id INT, employee_id STRING, course_id STRING, status STRING, assigned_date DATE, due_date DATE, completed_date DATE, completed_hours DOUBLE, target_hours DOUBLE""",
-        "store_weekly_metrics": """store_id INT, week_start_date DATE, region STRING, net_sales DOUBLE, weekly_sales_target DOUBLE, sales_vs_plan_pct DOUBLE, training_completion_pct DOUBLE, avg_wait_minutes DOUBLE, customer_satisfaction DOUBLE, scheduled_training_hours DOUBLE, actual_training_hours DOUBLE, converted_training_hours DOUBLE, conversion_reason STRING""",
-        "schedules": """store_id INT, week STRING, scheduled_training_hours DOUBLE, completed_training_hours DOUBLE, converted_training_hours DOUBLE, conversion_reason STRING""",
-        "training_events": """store_id INT, week STRING, scheduled_training_hours DOUBLE, completed_training_hours DOUBLE, converted_training_hours DOUBLE, conversion_reason STRING""",
-        "storetime_shifts": """shift_id STRING, store_id INT, shift_date DATE, daypart STRING, scheduled_partners INT, actual_partners INT, coverage_area STRING""",
-        "inventory": """store_id INT, ingredient STRING, on_hand_units DOUBLE, forecast_7d_units DOUBLE, reorder_eta_days DOUBLE, stockout_risk STRING, supplier STRING""",
-        "customer_feedback": """feedback_id STRING, store_id INT, feedback_date DATE, topic STRING, rating INT, comment_summary STRING""",
-        "ops_tasks": """task_id STRING, store_id INT, title STRING, description STRING, category STRING, severity STRING, status STRING, created_date DATE, owner STRING""",
-    }
     table_names = {
-        table: qualified_table(namespace, args.table_prefix, table) for table in ddl
+        table: qualified_table(namespace, args.table_prefix, table) for table in TABLE_DDL
     }
 
-    execute_sql(args.profile, args.warehouse_id, f"CREATE CATALOG IF NOT EXISTS {args.catalog}")
-    execute_sql(args.profile, args.warehouse_id, f"CREATE SCHEMA IF NOT EXISTS {namespace} COMMENT 'Bobabricks store operations demo data for Genie, StoreTime, Inventory, and OpsTask capabilities'")
-
-    for table, columns in ddl.items():
+    for table, columns in TABLE_DDL.items():
         execute_sql(args.profile, args.warehouse_id, f"CREATE OR REPLACE TABLE {table_names[table]} ({columns}) USING DELTA COMMENT 'Bobabricks {table.replace('_', ' ')} demo table'")
 
     data = build_seed_data()
     for table, (columns, rows) in data.items():
+        if table == "store_metrics":
+            continue
         insert_rows(args.profile, args.warehouse_id, table_names[table], columns, rows)
 
     execute_sql(

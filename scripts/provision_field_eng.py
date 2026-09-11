@@ -23,6 +23,7 @@ if str(ROOT) not in sys.path:
 
 from deploy.config import TargetConfig, load_target
 from deploy.databricks_cli import REQUIRED_USER, assert_profile, run_json
+from deploy.lakebase import LakebaseState, ensure_lakebase
 from deploy.safety import assert_safe_mutation
 
 
@@ -80,6 +81,8 @@ VerifyProfile = Callable[[str, str], dict]
 WorkspaceIdProvider = Callable[[str], str]
 ProcessRunner = Callable[[list[str]], None]
 Waiter = Callable[[float], None]
+WorkspaceFactory = Callable[[str], Any]
+LakebaseEnsurer = Callable[[Any, TargetConfig], LakebaseState]
 
 
 @dataclass(frozen=True)
@@ -426,6 +429,57 @@ def _write_json_atomic(path: Path, value: dict[str, Any]) -> None:
     os.replace(temporary_path, path)
 
 
+def _read_generated_state(path: Path) -> dict[str, Any]:
+    if not path.exists():
+        return {}
+    try:
+        value = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as error:
+        raise RuntimeError("Field-eng generated state is unreadable") from error
+    if not isinstance(value, dict):
+        raise RuntimeError("Field-eng generated state must be an object")
+    allowed = {"target", "warehouse_id", "genie_space_id", "lakebase"}
+    if set(value) - allowed:
+        raise RuntimeError("Field-eng generated state contains unexpected fields")
+    if value.get("target") not in (None, "field_eng"):
+        raise RuntimeError("Refusing to merge generated state for another target")
+    return dict(value)
+
+
+def _write_warehouse_state(path: Path, target: TargetConfig, warehouse_id: str) -> None:
+    state = _read_generated_state(path)
+    state.update({"target": target.key, "warehouse_id": warehouse_id})
+    _write_json_atomic(path, state)
+
+
+def reconcile_lakebase_state(
+    *,
+    state_path: Path | None = None,
+    workspace_factory: WorkspaceFactory | None = None,
+    lakebase_ensurer: LakebaseEnsurer = ensure_lakebase,
+) -> LakebaseState:
+    """Reconcile Lakebase and atomically merge its credential-free generated state."""
+    from databricks.sdk import WorkspaceClient
+
+    target = load_target("field_eng")
+    _require_target_contract(target)
+    output_path = state_path or ROOT / "deploy" / "state" / "field_eng.json"
+    state = _read_generated_state(output_path)
+    if state.get("target") != target.key:
+        raise RuntimeError("Field-eng generated state is missing the exact target binding")
+    for field_name in ("warehouse_id", "genie_space_id"):
+        value = state.get(field_name)
+        if not isinstance(value, str) or not CONCRETE_ID.fullmatch(value):
+            raise RuntimeError(f"Field-eng generated state is missing concrete {field_name}")
+
+    factory = workspace_factory or WorkspaceClient
+    workspace = factory(profile=target.profile)
+    lakebase = lakebase_ensurer(workspace, target)
+    state["lakebase"] = lakebase.as_dict()
+    _write_json_atomic(output_path, state)
+    return lakebase
+
+
 def _statement_rows(
     response: dict | list, run_cli: RunCli, profile: str
 ) -> list[dict[str, Any]]:
@@ -623,7 +677,7 @@ def apply_provision_plan(
         run_cli, target, warehouse_id, waiter
     )
     output_path = state_path or ROOT / "deploy" / "state" / "field_eng.json"
-    _write_json_atomic(output_path, {"target": target.key, "warehouse_id": warehouse_id})
+    _write_warehouse_state(output_path, target, warehouse_id)
     return ApplyEvidence(
         warehouse_id=warehouse_id,
         schemas=schemas,
@@ -645,7 +699,11 @@ def _parse_arguments(argv: list[str] | None = None) -> argparse.Namespace:
 def main() -> None:
     arguments = _parse_arguments()
     plan = build_provision_plan()
-    result = plan.as_dict() if arguments.dry_run else apply_provision_plan(plan).as_dict()
+    if arguments.dry_run:
+        result = plan.as_dict()
+    else:
+        result = apply_provision_plan(plan).as_dict()
+        reconcile_lakebase_state()
     print(json.dumps(result, indent=2, sort_keys=True))
 
 

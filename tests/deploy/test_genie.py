@@ -658,6 +658,39 @@ class GenieAcceptanceTest(unittest.TestCase):
                     workspace_id_provider=boundary.workspace_id,
                 )
 
+    def test_rejects_a_two_part_comma_relation_hidden_by_a_block_comment(self):
+        boundary = TargetBoundary(existing=True)
+        original = boundary.__call__
+
+        def unsafe(profile, args, payload=None):
+            response = original(profile, args, payload)
+            if len(args) == 4 and args[:3] == ["genie", "start-conversation", TARGET_SPACE_ID]:
+                response["attachments"][0]["query"]["query"] = (
+                    f"SELECT * FROM {TARGET_NAMESPACE}.gurary_stores p, "
+                    f"/* comment */ {SOURCE_SCHEMA}.stores s"
+                )
+            return response
+
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            state = Path(temporary_directory) / "field_eng.json"
+            state.write_text(
+                json.dumps(
+                    {
+                        "target": "field_eng",
+                        "warehouse_id": TARGET_WAREHOUSE_ID,
+                        "genie_space_id": TARGET_SPACE_ID,
+                    }
+                ),
+                encoding="utf-8",
+            )
+            with self.assertRaisesRegex(RuntimeError, "non-private table"):
+                run_acceptance(
+                    state_path=state,
+                    run_cli=unsafe,
+                    verify_profile=boundary.verify_profile,
+                    workspace_id_provider=boundary.workspace_id,
+                )
+
 
 if __name__ == "__main__":
     unittest.main()

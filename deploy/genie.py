@@ -57,9 +57,10 @@ _SQL_FROM_CLAUSE = re.compile(
     re.IGNORECASE | re.DOTALL,
 )
 _SQL_COMMA_RELATION = re.compile(
-    r",\s*((?:`[A-Za-z_][A-Za-z0-9_]*`|[A-Za-z_][A-Za-z0-9_]*)"
+    r",(?:\s|/\*.*?\*/|--[^\r\n]*(?:\r?\n|$))*"
+    r"((?:`[A-Za-z_][A-Za-z0-9_]*`|[A-Za-z_][A-Za-z0-9_]*)"
     r"(?:\s*\.\s*(?:`[A-Za-z_][A-Za-z0-9_]*`|[A-Za-z_][A-Za-z0-9_]*)){0,2})",
-    re.IGNORECASE,
+    re.IGNORECASE | re.DOTALL,
 )
 _SQL_QUALIFIED_IDENTIFIER = re.compile(
     r"(?:`[A-Za-z_][A-Za-z0-9_]*`|[A-Za-z_][A-Za-z0-9_]*)"

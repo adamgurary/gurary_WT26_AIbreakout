@@ -417,13 +417,20 @@ class McpDeploymentApplyTest(unittest.TestCase):
             ),
         )
 
-        with self.assertRaisesRegex(RuntimeError, "exact private deployment contract"):
-            field_eng.apply_mcp_deployment_plan(
-                wrong,
-                run_cli=boundary,
-                verify_profile=boundary.verify_profile,
-                workspace_id_provider=boundary.workspace_id,
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            state_path = Path(temporary_directory) / "field_eng.json"
+            state_path.write_text(
+                json.dumps({"target": "field_eng", "warehouse_id": WAREHOUSE_ID}),
+                encoding="utf-8",
             )
+            with self.assertRaisesRegex(RuntimeError, "exact private deployment contract"):
+                field_eng.apply_mcp_deployment_plan(
+                    wrong,
+                    run_cli=boundary,
+                    verify_profile=boundary.verify_profile,
+                    workspace_id_provider=boundary.workspace_id,
+                    state_path=state_path,
+                )
 
         self.assertEqual(boundary.events, [])
 
@@ -435,13 +442,20 @@ class McpDeploymentApplyTest(unittest.TestCase):
             apps=(plan.apps[0], replace(plan.apps[1], app_name=STORETIME_APP)),
         )
 
-        with self.assertRaisesRegex(RuntimeError, "exact private deployment contract"):
-            field_eng.apply_mcp_deployment_plan(
-                duplicate,
-                run_cli=boundary,
-                verify_profile=boundary.verify_profile,
-                workspace_id_provider=boundary.workspace_id,
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            state_path = Path(temporary_directory) / "field_eng.json"
+            state_path.write_text(
+                json.dumps({"target": "field_eng", "warehouse_id": WAREHOUSE_ID}),
+                encoding="utf-8",
             )
+            with self.assertRaisesRegex(RuntimeError, "exact private deployment contract"):
+                field_eng.apply_mcp_deployment_plan(
+                    duplicate,
+                    run_cli=boundary,
+                    verify_profile=boundary.verify_profile,
+                    workspace_id_provider=boundary.workspace_id,
+                    state_path=state_path,
+                )
 
         self.assertEqual(boundary.events, [])
 
@@ -453,13 +467,44 @@ class McpDeploymentApplyTest(unittest.TestCase):
             apps=(replace(plan.apps[0], grants=plan.apps[0].grants[:-1]), plan.apps[1]),
         )
 
-        with self.assertRaisesRegex(RuntimeError, "exact private deployment contract"):
-            field_eng.apply_mcp_deployment_plan(
-                incomplete,
-                run_cli=boundary,
-                verify_profile=boundary.verify_profile,
-                workspace_id_provider=boundary.workspace_id,
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            state_path = Path(temporary_directory) / "field_eng.json"
+            state_path.write_text(
+                json.dumps({"target": "field_eng", "warehouse_id": WAREHOUSE_ID}),
+                encoding="utf-8",
             )
+            with self.assertRaisesRegex(RuntimeError, "exact private deployment contract"):
+                field_eng.apply_mcp_deployment_plan(
+                    incomplete,
+                    run_cli=boundary,
+                    verify_profile=boundary.verify_profile,
+                    workspace_id_provider=boundary.workspace_id,
+                    state_path=state_path,
+                )
+
+        self.assertEqual(boundary.events, [])
+
+    def test_apply_rejects_plan_warehouse_that_differs_from_generated_state_before_boundary(self):
+        field_eng, plan = self._planned_apply()
+        boundary = MutableMcpBoundary()
+        wrong_environment = dict(plan.environment)
+        wrong_environment["DATABRICKS_WAREHOUSE_ID"] = "aaaaaaaaaaaaaaaa"
+        wrong = replace(plan, environment=wrong_environment)
+
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            state_path = Path(temporary_directory) / "field_eng.json"
+            state_path.write_text(
+                json.dumps({"target": "field_eng", "warehouse_id": WAREHOUSE_ID}),
+                encoding="utf-8",
+            )
+            with self.assertRaisesRegex(RuntimeError, "exact private warehouse state"):
+                field_eng.apply_mcp_deployment_plan(
+                    wrong,
+                    run_cli=boundary,
+                    verify_profile=boundary.verify_profile,
+                    workspace_id_provider=boundary.workspace_id,
+                    state_path=state_path,
+                )
 
         self.assertEqual(boundary.events, [])
 

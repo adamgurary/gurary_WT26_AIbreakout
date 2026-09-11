@@ -1543,11 +1543,21 @@ def _default_sync_runner(command: list[str]) -> None:
     subprocess.run(command, check=True)
 
 
-def _validate_mcp_deployment_plan(plan: McpDeploymentPlan) -> str:
+def _validate_mcp_deployment_plan(
+    plan: McpDeploymentPlan, generated_state: dict[str, Any]
+) -> str:
     """Fail closed on any constructed plan that differs from the reviewed contract."""
     target = plan.target
     _require_target_contract(target)
     warehouse_id = plan.environment.get("DATABRICKS_WAREHOUSE_ID")
+    state_warehouse_id = generated_state.get("warehouse_id")
+    if (
+        generated_state.get("target") != target.key
+        or not isinstance(state_warehouse_id, str)
+        or CONCRETE_ID.fullmatch(state_warehouse_id) is None
+        or warehouse_id != state_warehouse_id
+    ):
+        raise RuntimeError("MCP plan does not match the exact private warehouse state")
     expected_environment = {
         "DATABRICKS_WAREHOUSE_ID": warehouse_id,
         "DATABRICKS_CATALOG": target.catalog,
@@ -1604,10 +1614,9 @@ def apply_mcp_deployment_plan(
 ) -> McpDeploymentEvidence:
     """Reconcile, deploy, and live-validate the two private field-eng MCP apps."""
     target = plan.target
-    warehouse_id = _validate_mcp_deployment_plan(plan)
-
     output_path = state_path or ROOT / "deploy" / "state" / "field_eng.json"
     original_state = _read_generated_state(output_path)
+    warehouse_id = _validate_mcp_deployment_plan(plan, original_state)
     apps: dict[str, dict[str, Any]] = {}
     for app_plan in plan.apps:
         app = _ensure_mcp_app(

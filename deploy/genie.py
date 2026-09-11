@@ -51,6 +51,16 @@ _SQL_RELATION = re.compile(
     r"(?:\s*\.\s*(?:`[A-Za-z_][A-Za-z0-9_]*`|[A-Za-z_][A-Za-z0-9_]*)){0,2})",
     re.IGNORECASE,
 )
+_SQL_FROM_CLAUSE = re.compile(
+    r"\bFROM\b(?P<body>.*?)(?=\bWHERE\b|\bGROUP\s+BY\b|\bHAVING\b|"
+    r"\bORDER\s+BY\b|\bLIMIT\b|\bUNION\b|;|$)",
+    re.IGNORECASE | re.DOTALL,
+)
+_SQL_COMMA_RELATION = re.compile(
+    r",\s*((?:`[A-Za-z_][A-Za-z0-9_]*`|[A-Za-z_][A-Za-z0-9_]*)"
+    r"(?:\s*\.\s*(?:`[A-Za-z_][A-Za-z0-9_]*`|[A-Za-z_][A-Za-z0-9_]*)){0,2})",
+    re.IGNORECASE,
+)
 _SQL_QUALIFIED_IDENTIFIER = re.compile(
     r"(?:`[A-Za-z_][A-Za-z0-9_]*`|[A-Za-z_][A-Za-z0-9_]*)"
     r"(?:\s*\.\s*(?:`[A-Za-z_][A-Za-z0-9_]*`|[A-Za-z_][A-Za-z0-9_]*)){2}",
@@ -92,7 +102,11 @@ def rewrite_serialized_space(serialized: str, target: TargetConfig) -> str:
     if any(not isinstance(identifier, str) or not identifier.startswith(expected_prefix) for identifier in identifiers):
         raise ValueError("Serialized Genie space contains a non-private table data source")
     result = json.dumps(rewritten, separators=(",", ":"), sort_keys=True)
-    if SOURCE_NAMESPACE in result or SOURCE_WAREHOUSE_ID in result:
+    protected = (SOURCE_CATALOG, SOURCE_SCHEMA, SOURCE_WAREHOUSE_ID)
+    if any(
+        re.search(rf"(?<![A-Za-z0-9_]){re.escape(identifier)}(?![A-Za-z0-9_])", result)
+        for identifier in protected
+    ):
         raise ValueError("Serialized Genie space retains a protected source reference")
     return result
 
@@ -415,8 +429,14 @@ def _query_evidence(response: dict | list, target: TargetConfig) -> dict[str, An
         ]
         if any(identifier not in allowed for identifier in qualified):
             raise RuntimeError("Genie acceptance SQL referenced a non-private table")
-        for match in _SQL_RELATION.finditer(sql):
-            reference = re.sub(r"[`\s]", "", match.group(1))
+        relation_values = [match.group(1) for match in _SQL_RELATION.finditer(sql)]
+        relation_values.extend(
+            match.group(1)
+            for clause in _SQL_FROM_CLAUSE.finditer(sql)
+            for match in _SQL_COMMA_RELATION.finditer(clause.group("body"))
+        )
+        for value in relation_values:
+            reference = re.sub(r"[`\s]", "", value)
             if not reference.startswith(expected_prefix) or reference not in allowed:
                 raise RuntimeError("Genie acceptance SQL referenced a non-private table")
         references.extend(qualified)

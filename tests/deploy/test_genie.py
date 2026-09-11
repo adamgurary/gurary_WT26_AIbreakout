@@ -23,7 +23,9 @@ SOURCE_TABLE_NAMES = (
     "ops_tasks",
     "store_metrics",
 )
-SOURCE_NAMESPACE = "worldtour_ai_" "catalog.bobabricks_store_" "ops"
+SOURCE_CATALOG = "worldtour_ai_" "catalog"
+SOURCE_SCHEMA = "bobabricks_store_" "ops"
+SOURCE_NAMESPACE = f"{SOURCE_CATALOG}.{SOURCE_SCHEMA}"
 SOURCE_WAREHOUSE_ID = "88fd32ee6d94" "38ac"
 TARGET_WAREHOUSE_ID = "02e73edf357eb637"
 TARGET_SPACE_ID = "01f00000000000000000000000000001"
@@ -44,7 +46,7 @@ class GenieRewriteTest(unittest.TestCase):
                 },
                 "nested": {
                     "prose": "Do not replace worldtour_ai_"
-                    "catalog.bobabricks_store_operation.stores",
+                    "catalogue.bobabricks_store_operation.stores",
                 },
             }
         )
@@ -64,7 +66,7 @@ class GenieRewriteTest(unittest.TestCase):
         self.assertEqual(
             parsed["nested"]["prose"],
             "Do not replace worldtour_ai_"
-            "catalog.bobabricks_store_operation.stores",
+            "catalogue.bobabricks_store_operation.stores",
         )
 
     def test_rejects_duplicate_private_tables_that_hide_a_missing_mapping(self):
@@ -76,6 +78,20 @@ class GenieRewriteTest(unittest.TestCase):
 
         with self.assertRaisesRegex(ValueError, "exact private tables"):
             rewrite_serialized_space(serialized, load_target("field_eng"))
+
+    def test_rejects_a_standalone_source_catalog_value(self):
+        serialized = json.loads(source_serialized_space())
+        serialized["standalone_reference"] = SOURCE_CATALOG
+
+        with self.assertRaisesRegex(ValueError, "protected source reference"):
+            rewrite_serialized_space(json.dumps(serialized), load_target("field_eng"))
+
+    def test_rejects_a_standalone_source_schema_value(self):
+        serialized = json.loads(source_serialized_space())
+        serialized["standalone_reference"] = SOURCE_SCHEMA
+
+        with self.assertRaisesRegex(ValueError, "protected source reference"):
+            rewrite_serialized_space(json.dumps(serialized), load_target("field_eng"))
 
 
 class GenieSourceExportTest(unittest.TestCase):
@@ -554,6 +570,71 @@ class GenieAcceptanceTest(unittest.TestCase):
                 response["attachments"][0]["query"]["query"] = (
                     f"SELECT * FROM {TARGET_NAMESPACE}.gurary_stores private_store, "
                     f"{SOURCE_NAMESPACE}.stores shared_store"
+                )
+            return response
+
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            state = Path(temporary_directory) / "field_eng.json"
+            state.write_text(
+                json.dumps(
+                    {
+                        "target": "field_eng",
+                        "warehouse_id": TARGET_WAREHOUSE_ID,
+                        "genie_space_id": TARGET_SPACE_ID,
+                    }
+                ),
+                encoding="utf-8",
+            )
+            with self.assertRaisesRegex(RuntimeError, "non-private table"):
+                run_acceptance(
+                    state_path=state,
+                    run_cli=unsafe,
+                    verify_profile=boundary.verify_profile,
+                    workspace_id_provider=boundary.workspace_id,
+                )
+
+    def test_rejects_a_two_part_relation_hidden_after_a_private_comma_join(self):
+        boundary = TargetBoundary(existing=True)
+        original = boundary.__call__
+
+        def unsafe(profile, args, payload=None):
+            response = original(profile, args, payload)
+            if len(args) == 4 and args[:3] == ["genie", "start-conversation", TARGET_SPACE_ID]:
+                response["attachments"][0]["query"]["query"] = (
+                    f"SELECT * FROM {TARGET_NAMESPACE}.gurary_stores private_store, "
+                    f"{SOURCE_SCHEMA}.stores shared_store"
+                )
+            return response
+
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            state = Path(temporary_directory) / "field_eng.json"
+            state.write_text(
+                json.dumps(
+                    {
+                        "target": "field_eng",
+                        "warehouse_id": TARGET_WAREHOUSE_ID,
+                        "genie_space_id": TARGET_SPACE_ID,
+                    }
+                ),
+                encoding="utf-8",
+            )
+            with self.assertRaisesRegex(RuntimeError, "non-private table"):
+                run_acceptance(
+                    state_path=state,
+                    run_cli=unsafe,
+                    verify_profile=boundary.verify_profile,
+                    workspace_id_provider=boundary.workspace_id,
+                )
+
+    def test_rejects_an_unqualified_relation_hidden_after_a_private_comma_join(self):
+        boundary = TargetBoundary(existing=True)
+        original = boundary.__call__
+
+        def unsafe(profile, args, payload=None):
+            response = original(profile, args, payload)
+            if len(args) == 4 and args[:3] == ["genie", "start-conversation", TARGET_SPACE_ID]:
+                response["attachments"][0]["query"]["query"] = (
+                    f"SELECT * FROM {TARGET_NAMESPACE}.gurary_stores private_store, stores shared_store"
                 )
             return response
 

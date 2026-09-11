@@ -209,6 +209,20 @@ export function AppSidebar({
 """
 
 
+def lakebase_panel_source() -> str:
+    """Return sidebar source that reflects the deployment's real memory state."""
+    if os.getenv("BOBABRICKS_DISABLE_LAKEBASE") != "1":
+        return BOBABRICKS_APP_SIDEBAR
+    return (
+        BOBABRICKS_APP_SIDEBAR.replace("bg-emerald-500", "bg-amber-500")
+        .replace("<span>bobabricks</span>", "<span>Memory disabled</span>")
+        .replace(
+            "Regional preference and demo session memory",
+            "Persistent session memory is disabled for this deployment",
+        )
+    )
+
+
 BOBABRICKS_SUGGESTED_ACTIONS = r"""import { memo } from 'react';
 
 function PureSuggestedActions() {
@@ -409,7 +423,7 @@ class ProcessManager:
     def apply_bobabricks_frontend_overlay(self) -> None:
         frontend_dir = Path("e2e-chatbot-app-next")
         (frontend_dir / "client/src/components/app-sidebar.tsx").write_text(
-            BOBABRICKS_APP_SIDEBAR,
+            lakebase_panel_source(),
             encoding="utf-8",
         )
         (frontend_dir / "client/src/components/suggested-actions.tsx").write_text(

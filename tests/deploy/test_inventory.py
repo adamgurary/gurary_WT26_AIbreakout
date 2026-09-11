@@ -47,6 +47,8 @@ class JsonSafeDatabricksCliTest(unittest.TestCase):
                 "update",
                 "catalog",
                 "demo",
+                "--json",
+                "@/dev/stdin",
                 "--profile",
                 "fevm-worldtour-ai",
                 "--output",

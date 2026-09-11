@@ -390,7 +390,7 @@ def _ignored_names(directory: Path, names: list[str]) -> set[str]:
     relative = directory.relative_to(ROOT)
     ignored = {name for name in names if name in {".git", ".build", ".venv", ".superpowers", "__pycache__", ".pytest_cache"}}
     if relative == Path("deploy"):
-        ignored.add("state")
+        ignored.update({"state", "inventory"})
     return ignored
 
 

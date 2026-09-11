@@ -252,6 +252,28 @@ class DeploymentRenderTest(unittest.TestCase):
                         render_deployment("fevm", "baseline")
                 unsafe_file.unlink()
 
+    def test_excludes_generated_live_inventory_from_rendered_source(self):
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            temporary_root = Path(temporary_directory)
+            source_root = temporary_root / "source"
+            source_root.mkdir()
+            write_source_templates(source_root)
+            inventory_path = source_root / "deploy" / "inventory" / "live-fevm-before.json"
+            inventory_path.parent.mkdir(parents=True)
+            inventory_path.write_text(
+                json.dumps(
+                    {"shared_principal": "ad341da9-d12e-4688-ad1c-" "3c049cf70486"}
+                ),
+                encoding="utf-8",
+            )
+
+            with patch("deploy.render.ROOT", source_root), patch(
+                "deploy.render.BUILD_ROOT", temporary_root / "build"
+            ), patch("deploy.render.STATE_ROOT", temporary_root / "state"):
+                rendered = render_deployment("fevm", "baseline")
+
+            self.assertFalse((rendered / "deploy" / "inventory").exists())
+
     def test_rejects_new_forbidden_occurrence_in_safe_reference_files(self):
         for relative_path in ("README.md", "deploy/render.py", "tests/deploy/test_render.py"):
             with self.subTest(path=relative_path), tempfile.TemporaryDirectory() as temporary_directory:

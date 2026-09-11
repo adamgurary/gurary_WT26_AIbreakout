@@ -79,6 +79,19 @@ class FakeDirectClient:
                     "inputSchema": {"type": "object", "properties": {}},
                 },
             ]
+        if "/genie/" in self.url:
+            return [
+                {
+                    "name": "query_space_genie-space-id",
+                    "description": "query governed metrics",
+                    "inputSchema": {"type": "object", "properties": {}},
+                },
+                {
+                    "name": "poll_response_genie-space-id",
+                    "description": "poll governed metrics",
+                    "inputSchema": {"type": "object", "properties": {}},
+                },
+            ]
         return [
             {
                 "name": "inspect_schedule",
@@ -153,8 +166,22 @@ class RuntimeToolIsolationTest(unittest.IsolatedAsyncioTestCase):
         ), patch.object(agent, "_databricks_mcp_token", return_value="token"):
             tools, unavailable = await agent.build_direct_databricks_mcp_tools(FakeAsyncExitStack())
 
-        self.assertEqual([tool.name for tool in tools], ["inspect_schedule", "list_existing_ops_tasks"])
+        self.assertEqual(
+            [tool.name for tool in tools],
+            [
+                "query_space_genie-space-id",
+                "poll_response_genie-space-id",
+                "inspect_schedule",
+                "list_existing_ops_tasks",
+            ],
+        )
         self.assertEqual(unavailable, [])
+
+    def test_default_direct_transport_does_not_duplicate_genie_as_an_sdk_server(self):
+        with patch.object(agent, "USE_SDK_MCP_SERVERS", False):
+            servers = agent.build_mcp_servers(object())
+
+        self.assertEqual(servers, [])
 
     def test_fevm_sdk_path_omits_raw_opstask_server(self):
         with patch.dict(os.environ, {"SHARED_MCP_READ_ONLY": "true"}), patch.object(
@@ -186,6 +213,14 @@ class RuntimeToolIsolationTest(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn("task creation tools", read_only)
         self.assertNotIn(
             "unless the user explicitly asks to create a follow-up task",
+            normalized_read_only,
+        )
+        self.assertIn(
+            "official company training goal is unavailable",
+            normalized_read_only,
+        )
+        self.assertIn(
+            "Never cite a tool that was unavailable, failed, or was only used in a prior turn",
             normalized_read_only,
         )
 

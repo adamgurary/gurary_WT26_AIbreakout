@@ -206,6 +206,10 @@ natural: do not expose internal tool availability problems, missing-source
 diagnostics, or reconnect instructions unless the user explicitly asks about tool
 health. Lead with the answer, then cite the tool evidence compactly. Preserve
 markdown tables returned by tools for training-hour comparisons.
+In the baseline state without Confluence, the official company training goal is unavailable.
+State that gap exactly instead of inferring a goal from scheduled hours or prior knowledge.
+Source lines must name only tools that returned evidence in the current turn. Never cite a
+tool that was unavailable, failed, or was only used in a prior turn.
 
 When asked what tools you have, answer from the configured Bobabricks tool
 context in a clean demo style. Do not call a tool for this question. Do not use
@@ -266,8 +270,8 @@ Keep responses polished and easy to scan. Use the cleaner demo format:
   one summary sentence, then a table with at most 5 stores. Put Seattle Pike
   Place (104) 🚩 first. Show up to 4 additional on-track green examples only
   when available. Do not include a Notes section, root-cause analysis, next steps,
-  "if you want" offers, or mention empty StoreTime results. Use the source line
-  "Source: bobabricks_store_operations."
+  "if you want" offers, or mention empty StoreTime results. The source line must
+  list only the successful tools used in this turn.
 - For Store 104 "why", "behind", or "falling behind" training questions in the
   upgraded state, use Confluence for the company goal/standard first, then use
   StoreTime for schedule/training evidence and Genie when available for the
@@ -287,8 +291,10 @@ Keep responses polished and easy to scan. Use the cleaner demo format:
   the final source line.
 - For the final demo question "What are our FY26 training goals, and how does
   Store 104 stack up?", do not include a recommendation or next step unless the
-  user asks for one. Use this structure: one sentence with the goal and Store 104
-  status, then 2-3 bullets with the evidence.
+  user asks for one. In the baseline state, call Genie and StoreTime in this turn,
+  then open by saying the official company training goal is unavailable while
+  stating Store 104's live status. In the upgraded state, open with the goal
+  returned by Confluence and Store 104's live status. Then give 2-3 evidence bullets.
 - For follow-up action questions such as "What should I do next?" or "What
   should I do about Store 104?", call Confluence for the training playbook and
   StoreTime for Store 104 schedule/conversion context before answering. Then
@@ -309,8 +315,8 @@ Keep responses polished and easy to scan. Use the cleaner demo format:
   the user explicitly asks to create a follow-up task.
 - Keep follow-up explanation to 2-4 bullets. Avoid long missing-source sections
   unless the user explicitly asks why a tool failed.
-- End with a short source line such as "Sources: Genie, StoreTime." Add
-  Confluence only after the Atlassian tools are connected and used.
+- End with a short source line containing only tools that returned evidence in
+  this turn. Add Confluence only after the Atlassian tools are connected and used.
   Do not expose raw table names, MCP tool ids, or generated tool names unless the
   user explicitly asks for technical details.
 """
@@ -656,6 +662,7 @@ async def build_direct_databricks_mcp_tools(stack: AsyncExitStack) -> tuple[list
     tools: list[FunctionTool] = []
     unavailable: list[str] = []
     for name, url in [
+        ("bobabricks_genie", _genie_mcp_url()),
         ("storetime", STORETIME_MCP_URL),
         ("opstask", OPSTASK_MCP_URL),
     ]:
@@ -673,11 +680,11 @@ async def build_direct_databricks_mcp_tools(stack: AsyncExitStack) -> tuple[list
 
 
 def build_mcp_servers(workspace_client: WorkspaceClient) -> list[McpServer]:
+    if not USE_SDK_MCP_SERVERS:
+        return []
     servers = []
     if os.getenv("ENABLE_GENIE_MCP", "true").strip().lower() not in {"0", "false", "off", "no"}:
         servers.append(McpServer(url=_genie_mcp_url(), name="bobabricks_genie", workspace_client=workspace_client))
-    if not USE_SDK_MCP_SERVERS:
-        return servers
     if STORETIME_MCP_URL:
         servers.append(McpServer(url=STORETIME_MCP_URL, name="storetime", workspace_client=workspace_client))
     # SDK MCP servers are attached atomically, without per-tool metadata

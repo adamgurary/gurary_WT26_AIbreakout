@@ -23,7 +23,10 @@ def normalize_host(host: str) -> str:
 
 def run_json(profile: str, args: list[str], payload: dict | None = None) -> dict | list:
     """Run a read or write CLI API command without shell interpolation."""
-    command = ["databricks", *args, "--profile", profile, "--output", "json"]
+    command = ["databricks", *args]
+    if payload is not None:
+        command.extend(["--json", "@/dev/stdin"])
+    command.extend(["--profile", profile, "--output", "json"])
     result = subprocess.run(
         command,
         input=json.dumps(payload) if payload is not None else None,
@@ -64,7 +67,11 @@ def assert_profile(profile: str, expected_host: str) -> dict:
     if actual_host != expected:
         raise RuntimeError(f"Databricks profile host mismatch: expected {expected}, got {actual_host}")
 
-    user_name = current_user.get("user_name")
+    # The generated CLI currently emits SCIM's camelCase ``userName`` while
+    # older releases emitted the SDK-style ``user_name``.  Treat only those
+    # two exact spellings as identity fields; never fall back to display name
+    # or email metadata.
+    user_name = current_user.get("user_name", current_user.get("userName"))
     if user_name != REQUIRED_USER:
         raise RuntimeError(f"Databricks current user mismatch: expected {REQUIRED_USER}, got {user_name!r}")
     return {"host": actual_host, "current_user": current_user}

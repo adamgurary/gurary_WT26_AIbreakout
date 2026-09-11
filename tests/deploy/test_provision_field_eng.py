@@ -106,6 +106,7 @@ class MutableBoundary:
         self.warehouse_create_payloads: list[dict] = []
         self.schema_creates: list[str] = []
         self.process_commands: list[list[str]] = []
+        self.storetime_values = ["42", "28", "14"]
 
     def verify_profile(self, profile: str, host: str) -> dict:
         self.events.append(("binding", profile, host))
@@ -229,7 +230,7 @@ class MutableBoundary:
                         "completed_training_hours",
                         "converted_training_hours",
                     ],
-                    [["42", "28", "14"]],
+                    [self.storetime_values],
                 )
             raise AssertionError(f"unexpected verification SQL: {statement}")
         raise AssertionError(f"unexpected CLI boundary: {args}")
@@ -327,6 +328,18 @@ class FieldEngReconciliationTest(unittest.TestCase):
             ),
         )
         self.assertNotIn("--allow-shared-source", plan.data_provisioner_argv)
+
+    def test_storetime_verification_rejects_fractional_values(self):
+        boundary = MutableBoundary()
+        boundary.storetime_values = ["42.9", "28", "14"]
+
+        with self.assertRaisesRegex(RuntimeError, "did not match 42/28/14"):
+            self.field_eng._verify_private_data(
+                boundary,
+                self.field_eng.load_target("field_eng"),
+                WAREHOUSE_ID,
+                lambda _seconds: None,
+            )
 
     def test_schema_create_uses_the_installed_cli_positional_flag_shape(self):
         boundary = MutableBoundary()

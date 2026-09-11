@@ -549,8 +549,8 @@ def _verify_private_data(
     if len(storetime_rows) != 1:
         raise RuntimeError("Store 104 StoreTime fact was not unique")
     try:
-        storetime = tuple(
-            int(float(storetime_rows[0][field]))
+        storetime_values = tuple(
+            float(storetime_rows[0][field])
             for field in (
                 "scheduled_training_hours",
                 "completed_training_hours",
@@ -559,8 +559,9 @@ def _verify_private_data(
         )
     except (KeyError, TypeError, ValueError) as error:
         raise RuntimeError("Store 104 StoreTime fact is malformed") from error
-    if storetime != (42, 28, 14):
+    if storetime_values != (42, 28, 14):
         raise RuntimeError("Store 104 StoreTime fact did not match 42/28/14")
+    storetime = tuple(int(value) for value in storetime_values)
     return counts, training_completion, storetime
 
 

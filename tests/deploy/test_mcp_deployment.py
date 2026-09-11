@@ -1,10 +1,14 @@
 from __future__ import annotations
 
 import importlib
+import io
 import json
 from pathlib import Path
 import tempfile
 import unittest
+from contextlib import redirect_stdout
+from dataclasses import replace
+from unittest.mock import patch
 
 import yaml
 
@@ -386,6 +390,117 @@ class McpDeploymentPlanTest(unittest.TestCase):
 
 
 class McpDeploymentApplyTest(unittest.TestCase):
+    def _planned_apply(self):
+        field_eng = importlib.import_module("scripts.provision_field_eng")
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            state_path = Path(temporary_directory) / "field_eng.json"
+            state_path.write_text(
+                json.dumps({"target": "field_eng", "warehouse_id": WAREHOUSE_ID}),
+                encoding="utf-8",
+            )
+            plan = field_eng.build_mcp_deployment_plan(
+                run_cli=PlanBoundary(),
+                verify_profile=verified_identity,
+                workspace_id_provider=lambda _profile: WORKSPACE_ID,
+                state_path=state_path,
+            )
+        return field_eng, plan
+
+    def test_apply_rejects_wrong_workspace_path_before_first_remote_inspection(self):
+        field_eng, plan = self._planned_apply()
+        boundary = MutableMcpBoundary()
+        wrong = replace(
+            plan,
+            apps=(
+                replace(plan.apps[0], workspace_path=f"{WORKSPACE_PARENT}/gurary-wrong-source"),
+                plan.apps[1],
+            ),
+        )
+
+        with self.assertRaisesRegex(RuntimeError, "exact private deployment contract"):
+            field_eng.apply_mcp_deployment_plan(
+                wrong,
+                run_cli=boundary,
+                verify_profile=boundary.verify_profile,
+                workspace_id_provider=boundary.workspace_id,
+            )
+
+        self.assertEqual(boundary.events, [])
+
+    def test_apply_rejects_duplicate_app_names_before_first_remote_inspection(self):
+        field_eng, plan = self._planned_apply()
+        boundary = MutableMcpBoundary()
+        duplicate = replace(
+            plan,
+            apps=(plan.apps[0], replace(plan.apps[1], app_name=STORETIME_APP)),
+        )
+
+        with self.assertRaisesRegex(RuntimeError, "exact private deployment contract"):
+            field_eng.apply_mcp_deployment_plan(
+                duplicate,
+                run_cli=boundary,
+                verify_profile=boundary.verify_profile,
+                workspace_id_provider=boundary.workspace_id,
+            )
+
+        self.assertEqual(boundary.events, [])
+
+    def test_apply_rejects_missing_grant_before_first_remote_inspection(self):
+        field_eng, plan = self._planned_apply()
+        boundary = MutableMcpBoundary()
+        incomplete = replace(
+            plan,
+            apps=(replace(plan.apps[0], grants=plan.apps[0].grants[:-1]), plan.apps[1]),
+        )
+
+        with self.assertRaisesRegex(RuntimeError, "exact private deployment contract"):
+            field_eng.apply_mcp_deployment_plan(
+                incomplete,
+                run_cli=boundary,
+                verify_profile=boundary.verify_profile,
+                workspace_id_provider=boundary.workspace_id,
+            )
+
+        self.assertEqual(boundary.events, [])
+
+    def test_target_contract_pins_distinct_controller_approved_app_names(self):
+        field_eng = importlib.import_module("scripts.provision_field_eng")
+        target = field_eng.load_target("field_eng")
+
+        for unsafe in (
+            replace(target, storetime_app_name="gurary-unreviewed-storetime"),
+            replace(target, opstask_app_name="gurary-unreviewed-opstask"),
+            replace(target, opstask_app_name=target.storetime_app_name),
+        ):
+            with self.subTest(unsafe=unsafe):
+                with self.assertRaisesRegex(RuntimeError, "safety contract"):
+                    field_eng._require_target_contract(unsafe)
+
+    def test_apply_mcp_cli_mode_reaches_reconciliation_and_emits_evidence(self):
+        field_eng = importlib.import_module("scripts.provision_field_eng")
+        plan = object()
+
+        class Evidence:
+            @staticmethod
+            def as_dict():
+                return {"mode": "apply-mcp", "ops_baseline_count": 4}
+
+        output = io.StringIO()
+        with patch.object(field_eng, "build_mcp_deployment_plan", return_value=plan) as build, patch.object(
+            field_eng, "apply_mcp_deployment_plan", return_value=Evidence()
+        ) as apply, patch("sys.argv", ["provision_field_eng.py", "--apply-mcp"]), redirect_stdout(output):
+            try:
+                field_eng.main()
+            except SystemExit as error:
+                self.fail(f"supported MCP CLI mode was rejected: {error}")
+
+        build.assert_called_once_with()
+        apply.assert_called_once_with(plan)
+        self.assertEqual(
+            json.loads(output.getvalue()),
+            {"mode": "apply-mcp", "ops_baseline_count": 4},
+        )
+
     def test_app_create_uses_installed_cli_positional_name_shape(self):
         field_eng = importlib.import_module("scripts.provision_field_eng")
 

@@ -52,6 +52,8 @@ FIELD_CATALOG = "gurary_" "catalog"
 FIELD_DATA_SCHEMA = "gurary_bobabricks_store_" "ops"
 FIELD_TRACE_SCHEMA = "gurary_ai_gate" "way_demo"
 FIELD_TABLE_PREFIX = "gurary_"
+FIELD_STORETIME_APP = "gurary-bobabricks-store" "time"
+FIELD_OPSTASK_APP = "gurary-bobabricks-ops" "task-mcp"
 WAREHOUSE_CONFIG = {
     "name": FIELD_WAREHOUSE_NAME,
     "cluster_size": "X-Small",
@@ -251,8 +253,13 @@ def _require_target_contract(target: TargetConfig) -> None:
         "trace_schema": FIELD_TRACE_SCHEMA,
         "table_prefix": FIELD_TABLE_PREFIX,
         "warehouse_name": FIELD_WAREHOUSE_NAME,
+        "storetime_app_name": FIELD_STORETIME_APP,
+        "opstask_app_name": FIELD_OPSTASK_APP,
     }
-    if any(getattr(target, name) != value for name, value in expected.items()):
+    if (
+        any(getattr(target, name) != value for name, value in expected.items())
+        or target.storetime_app_name == target.opstask_app_name
+    ):
         raise RuntimeError("Field-eng target configuration does not match the safety contract")
 
 
@@ -1536,6 +1543,53 @@ def _default_sync_runner(command: list[str]) -> None:
     subprocess.run(command, check=True)
 
 
+def _validate_mcp_deployment_plan(plan: McpDeploymentPlan) -> str:
+    """Fail closed on any constructed plan that differs from the reviewed contract."""
+    target = plan.target
+    _require_target_contract(target)
+    warehouse_id = plan.environment.get("DATABRICKS_WAREHOUSE_ID")
+    expected_environment = {
+        "DATABRICKS_WAREHOUSE_ID": warehouse_id,
+        "DATABRICKS_CATALOG": target.catalog,
+        "DATABRICKS_SCHEMA": target.data_schema,
+        "DATABRICKS_TABLE_PREFIX": target.table_prefix,
+    }
+    expected_specs = (
+        (
+            target.storetime_app_name,
+            "mcp-apps/storetime",
+            f"{MCP_WORKSPACE_PARENT}/{target.storetime_app_name}",
+        ),
+        (
+            target.opstask_app_name,
+            "mcp-apps/opstask",
+            f"{MCP_WORKSPACE_PARENT}/{target.opstask_app_name}",
+        ),
+    )
+    exact = (
+        plan.environment == expected_environment
+        and isinstance(warehouse_id, str)
+        and CONCRETE_ID.fullmatch(warehouse_id) is not None
+        and len(plan.apps) == len(expected_specs)
+        and len({app.app_name for app in plan.apps}) == len(expected_specs)
+    )
+    if exact:
+        for app_plan, (app_name, source_relative, workspace_path) in zip(
+            plan.apps, expected_specs, strict=True
+        ):
+            if (
+                app_plan.app_name != app_name
+                or app_plan.source_relative != source_relative
+                or app_plan.workspace_path != workspace_path
+                or app_plan.grants != _mcp_grants(target, app_name)
+            ):
+                exact = False
+                break
+    if not exact:
+        raise RuntimeError("MCP plan does not match the exact private deployment contract")
+    return warehouse_id
+
+
 def apply_mcp_deployment_plan(
     plan: McpDeploymentPlan,
     *,
@@ -1550,23 +1604,7 @@ def apply_mcp_deployment_plan(
 ) -> McpDeploymentEvidence:
     """Reconcile, deploy, and live-validate the two private field-eng MCP apps."""
     target = plan.target
-    _require_target_contract(target)
-    if tuple(app.app_name for app in plan.apps) != (
-        target.storetime_app_name,
-        target.opstask_app_name,
-    ):
-        raise RuntimeError("MCP deployment plan did not contain exactly the two owned apps")
-    expected_environment = {
-        "DATABRICKS_WAREHOUSE_ID": plan.environment.get("DATABRICKS_WAREHOUSE_ID"),
-        "DATABRICKS_CATALOG": target.catalog,
-        "DATABRICKS_SCHEMA": target.data_schema,
-        "DATABRICKS_TABLE_PREFIX": target.table_prefix,
-    }
-    if plan.environment != expected_environment:
-        raise RuntimeError("MCP deployment plan environment is not private")
-    warehouse_id = plan.environment["DATABRICKS_WAREHOUSE_ID"]
-    if not isinstance(warehouse_id, str) or not CONCRETE_ID.fullmatch(warehouse_id):
-        raise RuntimeError("MCP deployment plan has no concrete private warehouse")
+    warehouse_id = _validate_mcp_deployment_plan(plan)
 
     output_path = state_path or ROOT / "deploy" / "state" / "field_eng.json"
     original_state = _read_generated_state(output_path)
@@ -1924,15 +1962,23 @@ def _parse_arguments(argv: list[str] | None = None) -> argparse.Namespace:
     mode = parser.add_mutually_exclusive_group(required=True)
     mode.add_argument("--dry-run", action="store_true")
     mode.add_argument("--apply", action="store_true")
+    mode.add_argument("--dry-run-mcp", action="store_true")
+    mode.add_argument("--apply-mcp", action="store_true")
     return parser.parse_args(argv)
 
 
 def main() -> None:
     arguments = _parse_arguments()
-    plan = build_provision_plan()
-    if arguments.dry_run:
+    if arguments.dry_run_mcp:
+        result = build_mcp_deployment_plan().as_dict()
+    elif arguments.apply_mcp:
+        mcp_plan = build_mcp_deployment_plan()
+        result = apply_mcp_deployment_plan(mcp_plan).as_dict()
+    elif arguments.dry_run:
+        plan = build_provision_plan()
         result = plan.as_dict()
     else:
+        plan = build_provision_plan()
         result = apply_provision_plan(plan).as_dict()
         reconcile_lakebase_state()
     print(json.dumps(result, indent=2, sort_keys=True))

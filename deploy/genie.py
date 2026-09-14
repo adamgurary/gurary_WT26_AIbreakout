@@ -12,7 +12,7 @@ import time
 from typing import Any
 
 from .config import TargetConfig, load_target
-from .databricks_cli import REQUIRED_USER, assert_profile, run_json
+from .databricks_cli import REQUIRED_USER, assert_profile, live_workspace_id, run_json
 from .safety import assert_safe_mutation
 
 
@@ -34,9 +34,9 @@ SOURCE_TABLE_NAMES = (
     "ops_tasks",
     "store_metrics",
 )
-FIELD_PROFILE = "e2-demo-field-eng"
-FIELD_HOST = "https://e2-demo-field-eng.cloud.databricks.com"
-FIELD_WORKSPACE_ID = "1444828305810485"
+FIELD_PROFILE = "dogfood-vs"
+FIELD_HOST = "https://dogfood.staging.databricks.com"
+FIELD_WORKSPACE_ID = "715783009495722"
 FIELD_WAREHOUSE_NAME = "gurary_bobabricks_" "warehouse"
 FIELD_SPACE_NAME = "gurary_bobabricks_store_" "operations"
 FIELD_PARENT_PATH = "/Users/adam.gurary@databricks.com"
@@ -153,9 +153,7 @@ def export_source(
 
 
 def _workspace_id_from_sdk(profile: str) -> str:
-    from databricks.sdk import WorkspaceClient
-
-    return str(WorkspaceClient(profile=profile).get_workspace_id())
+    return live_workspace_id(profile)
 
 
 def _require_field_target(target: TargetConfig) -> None:

@@ -44,6 +44,7 @@ class TargetConfig:
     lakebase_schema: str | None = None
     confluence_connection: str = ""
     shared_mcp_read_only: bool = False
+    apps_domain: str = "aws.databricksapps.com"
 
 
 @dataclass(frozen=True)

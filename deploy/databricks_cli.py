@@ -55,6 +55,21 @@ def _profile_host(auth_environment: dict | list) -> str:
     return host
 
 
+def live_workspace_id(profile: str) -> str:
+    """Return the workspace ID configured for *profile*.
+
+    Reads ``Config(profile=profile).workspace_id``, which the SDK resolves from the
+    Databricks config file.  This avoids any live network call and never hangs on
+    SPOG/account-level profiles where ``get_workspace_id()`` times out.
+    """
+    from databricks.sdk.core import Config  # lazy import — keeps module importable without SDK
+
+    ws = Config(profile=profile).workspace_id
+    if not ws:
+        raise RuntimeError(f"profile {profile!r} has no workspace_id configured")
+    return str(ws)
+
+
 def assert_profile(profile: str, expected_host: str) -> dict:
     """Verify the CLI profile targets the expected workspace and Adam's user."""
     auth_environment = run_json(profile, ["auth", "env"])

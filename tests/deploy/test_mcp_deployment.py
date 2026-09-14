@@ -13,9 +13,9 @@ from unittest.mock import patch
 import yaml
 
 
-PROFILE = "e2-demo-field-eng"
-HOST = "https://e2-demo-field-eng.cloud.databricks.com"
-WORKSPACE_ID = "1444828305810485"
+PROFILE = "dogfood-vs"
+HOST = "https://dogfood.staging.databricks.com"
+WORKSPACE_ID = "715783009495722"
 CATALOG = "gurary_" "catalog"
 SCHEMA = "gurary_bobabricks_store_" "ops"
 TABLE_PREFIX = "gurary_"
@@ -77,7 +77,7 @@ class MutableMcpBoundary:
         return {
             "id": suffix,
             "name": name,
-            "url": f"https://{name}-{WORKSPACE_ID}.aws.databricksapps.com",
+            "url": f"https://{name}-{WORKSPACE_ID}.staging.aws.databricksapps.com",
             "service_principal_client_id": principal,
             "creator": "adam.gurary@databricks.com",
             "app_status": {"state": "RUNNING"},
@@ -642,11 +642,11 @@ class McpDeploymentApplyTest(unittest.TestCase):
             )
             self.assertEqual(
                 saved["storetime_mcp_url"],
-                f"https://{STORETIME_APP}-{WORKSPACE_ID}.aws.databricksapps.com/mcp",
+                f"https://{STORETIME_APP}-{WORKSPACE_ID}.staging.aws.databricksapps.com/mcp",
             )
             self.assertEqual(
                 saved["opstask_mcp_url"],
-                f"https://{OPSTASK_APP}-{WORKSPACE_ID}.aws.databricksapps.com/mcp",
+                f"https://{OPSTASK_APP}-{WORKSPACE_ID}.staging.aws.databricksapps.com/mcp",
             )
 
             for app_name, source in (

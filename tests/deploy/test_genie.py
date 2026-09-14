@@ -223,7 +223,7 @@ class TargetBoundary:
 
     def workspace_id(self, profile):
         self.events.append(("workspace", profile))
-        return "1444828305810485"
+        return "715783009495722"
 
     def update_space(self, profile, space_id, payload, etag):
         self.events.append(("mutation", "update", profile, space_id, payload, etag))
@@ -322,7 +322,7 @@ class TargetBoundary:
         raise AssertionError(f"unexpected target call: {args}, {payload}")
 
     def assert_profile(self, profile):
-        if profile != "e2-demo-field-eng":
+        if profile != "dogfood-vs":
             raise AssertionError(f"unexpected profile: {profile}")
 
 

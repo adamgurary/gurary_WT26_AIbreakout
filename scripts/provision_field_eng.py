@@ -24,7 +24,7 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from deploy.config import TargetConfig, load_target
-from deploy.databricks_cli import REQUIRED_USER, assert_profile, run_json
+from deploy.databricks_cli import REQUIRED_USER, assert_profile, live_workspace_id, run_json
 from deploy.lakebase import LakebaseState, ensure_lakebase
 from deploy.safety import assert_safe_mutation
 
@@ -44,9 +44,9 @@ EXPECTED_COUNTS = {
     "store_metrics": 14,
 }
 TABLE_NAMES = tuple(EXPECTED_COUNTS)
-FIELD_PROFILE = "e2-demo-field-eng"
-FIELD_HOST = "https://e2-demo-field-eng.cloud.databricks.com"
-FIELD_WORKSPACE_ID = "1444828305810485"
+FIELD_PROFILE = "dogfood-vs"
+FIELD_HOST = "https://dogfood.staging.databricks.com"
+FIELD_WORKSPACE_ID = "715783009495722"
 FIELD_WAREHOUSE_NAME = "gurary_bobabricks_" "warehouse"
 FIELD_CATALOG = "gurary_" "catalog"
 FIELD_DATA_SCHEMA = "gurary_bobabricks_store_" "ops"
@@ -54,6 +54,7 @@ FIELD_TRACE_SCHEMA = "gurary_ai_gate" "way_demo"
 FIELD_TABLE_PREFIX = "gurary_"
 FIELD_STORETIME_APP = "gurary-bobabricks-store" "time"
 FIELD_OPSTASK_APP = "gurary-bobabricks-ops" "task-mcp"
+FIELD_PRESENTER_APP = "gurary-bobabricks-store-ops"
 WAREHOUSE_CONFIG = {
     "name": FIELD_WAREHOUSE_NAME,
     "cluster_size": "X-Small",
@@ -82,6 +83,23 @@ CONCRETE_ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9_-]+")
 MCP_STORETIME_TABLES = ("schedules", "training_events", "storetime_shifts")
 MCP_OPSTASK_TABLE = "ops_tasks"
 MCP_WORKSPACE_PARENT = "/Workspace/Users/adam.gurary@databricks.com"
+PRESENTER_WORKSPACE_PATH = f"{MCP_WORKSPACE_PARENT}/gurary_WT26_AIbreakout"
+PRESENTER_SCOPES = ("ai-gateway", "genie", "mcp.external")
+TRACE_TABLE_PREFIX = "gurary_bobabricks"
+TRACE_DESTINATION_TAG = "mlflow.experiment.databricksTraceDestinationPath"
+TRACE_SPAN_TABLE_TAG = "mlflow.experiment.databricksTraceSpanStorageTable"
+TRACE_LOG_TABLE_TAG = "mlflow.experiment.databricksTraceLogStorageTable"
+TRACE_ANNOTATIONS_TABLE_TAG = "mlflow.experiment.databricksTraceAnnotationsTable"
+PRESENTER_PROMPTS = (
+    "What tools do you have?",
+    "Show average versus actual training hours for my Pacific stores and flag any stores falling behind.",
+    "Why is Store 104 behind on training?",
+    "What are our FY26 training goals, and how does Store 104 stack up?",
+)
+LAKEBASE_SESSION_TABLES = ("agent_sessions", "agent_messages")
+LAKEBASE_SESSION_SEQUENCE = "agent_messages_id_seq"
+LAKEBASE_TABLE_PRIVILEGES = frozenset({"SELECT", "INSERT", "UPDATE", "DELETE"})
+LAKEBASE_SEQUENCE_PRIVILEGES = frozenset({"USAGE"})
 
 RunCli = Callable[[str, list[str], dict | None], dict | list]
 VerifyProfile = Callable[[str, str], dict]
@@ -219,10 +237,59 @@ class McpDeploymentEvidence:
         }
 
 
-def _workspace_id_from_sdk(profile: str) -> str:
-    from databricks.sdk import WorkspaceClient
+@dataclass(frozen=True)
+class PresenterDeploymentPlan:
+    target: TargetConfig
+    app_name: str
+    workspace_path: str
+    scopes: tuple[str, ...]
+    grants: tuple[McpGrant, ...]
+    generated_state: dict[str, Any]
+    current_app: dict[str, Any] | None
 
-    return str(WorkspaceClient(profile=profile).get_workspace_id())
+    def as_dict(self) -> dict[str, Any]:
+        return {
+            "mode": "dry-run-presenter",
+            "app_name": self.app_name,
+            "workspace_path": self.workspace_path,
+            "scopes": list(self.scopes),
+            "grants": [
+                {
+                    "securable_type": grant.securable_type,
+                    "full_name": grant.full_name,
+                    "privileges": sorted(grant.privileges),
+                }
+                for grant in self.grants
+            ],
+            "generated_state_keys": sorted(self.generated_state),
+        }
+
+
+@dataclass(frozen=True)
+class PresenterDeploymentEvidence:
+    deployment_state: str
+    app_state: str
+    compute_state: str
+    prompt_count: int
+    trace_table_count: int
+    ops_baseline_count: int
+    lakebase_schema: str
+
+    def as_dict(self) -> dict[str, Any]:
+        return {
+            "mode": "apply-presenter",
+            "deployment_state": self.deployment_state,
+            "app_state": self.app_state,
+            "compute_state": self.compute_state,
+            "prompt_count": self.prompt_count,
+            "trace_table_count": self.trace_table_count,
+            "ops_baseline_count": self.ops_baseline_count,
+            "lakebase_schema": self.lakebase_schema,
+        }
+
+
+def _workspace_id_from_sdk(profile: str) -> str:
+    return live_workspace_id(profile)
 
 
 def _records(response: dict | list, key: str, label: str) -> list[dict[str, Any]]:
@@ -253,6 +320,7 @@ def _require_target_contract(target: TargetConfig) -> None:
         "trace_schema": FIELD_TRACE_SCHEMA,
         "table_prefix": FIELD_TABLE_PREFIX,
         "warehouse_name": FIELD_WAREHOUSE_NAME,
+        "presenter_app_name": FIELD_PRESENTER_APP,
         "storetime_app_name": FIELD_STORETIME_APP,
         "opstask_app_name": FIELD_OPSTASK_APP,
     }
@@ -529,6 +597,10 @@ def _read_generated_state(path: Path) -> dict[str, Any]:
         "opstask_app_id",
         "opstask_service_principal_client_id",
         "opstask_mcp_url",
+        "presenter_app_id",
+        "presenter_app_url",
+        "presenter_service_principal_client_id",
+        "mlflow_experiment_name",
     }
     if set(value) - allowed:
         raise RuntimeError("Field-eng generated state contains unexpected fields")
@@ -620,7 +692,7 @@ def build_mcp_deployment_plan(
 
 
 def _app_url(target: TargetConfig, app_name: str) -> str:
-    return f"https://{app_name}-{target.workspace_id}.aws.databricksapps.com"
+    return f"https://{app_name}-{target.workspace_id}.{target.apps_domain}"
 
 
 def _require_uuid(value: Any, label: str) -> str:
@@ -1895,6 +1967,431 @@ def apply_mcp_deployment_plan(
         tools=tools,
         store_104_storetime=storetime,
         ops_baseline_count=baseline_count,
+    )
+
+
+def _validate_presenter_trace_proof(
+    request: dict[str, Any], proof: dict[str, Any]
+) -> None:
+    """Fail closed if the live trace proof is missing any of the four exact UC trace tags."""
+    _required = frozenset({
+        TRACE_DESTINATION_TAG,
+        TRACE_SPAN_TABLE_TAG,
+        TRACE_LOG_TABLE_TAG,
+        TRACE_ANNOTATIONS_TABLE_TAG,
+    })
+    tags = proof.get("experiment_tags") if isinstance(proof, dict) else None
+    if not isinstance(tags, dict) or not _required.issubset(tags):
+        raise RuntimeError("four exact UC trace tags are required in the presenter proof")
+
+
+def _validate_lakebase_access_proof(
+    principal: str, proof: dict[str, Any]
+) -> None:
+    """Fail closed if the Lakebase proof shows access outside the isolated schema."""
+    if not isinstance(proof, dict):
+        raise RuntimeError("Lakebase access proof is malformed")
+    outside = proof.get("outside_schema_privileges", [])
+    if not isinstance(outside, list) or outside:
+        raise RuntimeError("Presenter app has Lakebase access outside the isolated schema")
+
+
+def _ensure_presenter_app_created(
+    target: TargetConfig,
+    run_cli: RunCli,
+    verify_profile: VerifyProfile,
+    workspace_id_provider: WorkspaceIdProvider,
+) -> tuple[dict[str, Any], bool]:
+    """Inspect current presenter app, create if absent. Returns (app, created)."""
+    _assert_target_binding(target, verify_profile, workspace_id_provider)
+    assert_safe_mutation(target, "app", target.presenter_app_name)
+    apps_response = run_cli(target.profile, ["apps", "list"])
+    existing = {app.get("name") for app in _records(apps_response, "apps", "apps")}
+    created = target.presenter_app_name not in existing
+    if created:
+        run_cli(target.profile, ["apps", "create", target.presenter_app_name])
+    app = run_cli(target.profile, ["apps", "get", target.presenter_app_name])
+    if not isinstance(app, dict) or app.get("name") != target.presenter_app_name:
+        raise RuntimeError("Presenter app readback did not match the owned name")
+    return dict(app), created
+
+
+def _ensure_presenter_scopes_set(
+    target: TargetConfig,
+    app_id: str,
+    principal: str,
+    run_cli: RunCli,
+    verify_profile: VerifyProfile,
+    workspace_id_provider: WorkspaceIdProvider,
+) -> dict[str, Any]:
+    """Ensure the presenter app has exactly the required OBO scopes."""
+    _assert_target_binding(target, verify_profile, workspace_id_provider)
+    app = run_cli(target.profile, ["apps", "get", target.presenter_app_name])
+    if (
+        not isinstance(app, dict)
+        or app.get("id") != app_id
+        or app.get("service_principal_client_id") != principal
+    ):
+        raise RuntimeError("Presenter app identity changed before scope reconciliation")
+    if tuple(app.get("user_api_scopes", ())) != PRESENTER_SCOPES:
+        assert_safe_mutation(target, "app", target.presenter_app_name)
+        run_cli(
+            target.profile,
+            ["apps", "update", target.presenter_app_name],
+            {"user_api_scopes": list(PRESENTER_SCOPES)},
+        )
+    current = run_cli(target.profile, ["apps", "get", target.presenter_app_name])
+    if not isinstance(current, dict) or tuple(current.get("user_api_scopes", ())) != PRESENTER_SCOPES:
+        raise RuntimeError("Presenter app OBO scopes were not reconciled")
+    return dict(current)
+
+
+def _ensure_presenter_uc_grant(
+    target: TargetConfig,
+    app_id: str,
+    principal: str,
+    grant: McpGrant,
+    run_cli: RunCli,
+    verify_profile: VerifyProfile,
+    workspace_id_provider: WorkspaceIdProvider,
+) -> None:
+    """Ensure a single UC grant for the presenter app's service principal."""
+    _assert_target_binding(target, verify_profile, workspace_id_provider)
+    if grant.securable_type == "catalog":
+        response = run_cli(target.profile, ["catalogs", "get", grant.full_name])
+        if not isinstance(response, dict) or response.get("name") != grant.full_name:
+            raise RuntimeError(f"Presenter catalog {grant.full_name} not found")
+    elif grant.securable_type == "schema":
+        response = run_cli(target.profile, ["schemas", "get", grant.full_name])
+        if not isinstance(response, dict) or response.get("full_name") != grant.full_name:
+            raise RuntimeError(f"Presenter schema {grant.full_name} not found")
+    else:
+        raise RuntimeError(f"Unsupported presenter grant securable: {grant.securable_type}")
+    args = ["grants", "get", grant.securable_type, grant.full_name]
+    current = run_cli(target.profile, args)
+    missing = grant.privileges - _principal_privileges(current, principal)
+    if missing:
+        assert_safe_mutation(target, grant.securable_type, grant.full_name)
+        run_cli(
+            target.profile,
+            ["grants", "update", grant.securable_type, grant.full_name],
+            {"changes": [{"principal": principal, "add": sorted(missing)}]},
+        )
+    effective = run_cli(target.profile, args)
+    if not grant.privileges.issubset(_principal_privileges(effective, principal)):
+        raise RuntimeError(f"Presenter UC grant was not effective on {grant.full_name}")
+
+
+def _sync_presenter_baseline(
+    target: TargetConfig,
+    workspace_path: str,
+    build_path: Path,
+    run_cli: RunCli,
+    verify_profile: VerifyProfile,
+    workspace_id_provider: WorkspaceIdProvider,
+    sync_runner: SyncRunner,
+) -> None:
+    """Sync the rendered baseline to the owned workspace path."""
+    _assert_target_binding(target, verify_profile, workspace_id_provider)
+    _workspace_objects(run_cli(target.profile, ["workspace", "list", MCP_WORKSPACE_PARENT]))
+    sync_source = build_path.resolve(strict=True)
+    if not sync_source.is_dir():
+        raise RuntimeError("Rendered presenter baseline did not resolve to a directory")
+    sync_runner([
+        "databricks", "sync", "--full", "--include", "**",
+        str(sync_source),
+        workspace_path,
+        "--profile", target.profile,
+    ])
+    synced = _workspace_objects(run_cli(target.profile, ["workspace", "list", workspace_path]))
+    if not any(
+        item.get("path") == f"{workspace_path}/app.yaml"
+        and str(item.get("object_type")).upper() == "FILE"
+        for item in synced
+    ):
+        raise RuntimeError("Presenter workspace sync did not produce the app manifest")
+
+
+def _ensure_presenter_workspace_readable(
+    target: TargetConfig,
+    principal: str,
+    workspace_path: str,
+    run_cli: RunCli,
+    verify_profile: VerifyProfile,
+    workspace_id_provider: WorkspaceIdProvider,
+) -> None:
+    """Ensure the presenter SP can read the synced workspace source directory."""
+    _assert_target_binding(target, verify_profile, workspace_id_provider)
+    _workspace_objects(run_cli(target.profile, ["workspace", "list", MCP_WORKSPACE_PARENT]))
+    status = run_cli(target.profile, ["workspace", "get-status", workspace_path])
+    if (
+        not isinstance(status, dict)
+        or status.get("path") != workspace_path
+        or str(status.get("object_type")).upper() != "DIRECTORY"
+    ):
+        raise RuntimeError("Presenter workspace source directory readback did not match")
+    object_id = status.get("object_id")
+    if not isinstance(object_id, (str, int)) or not str(object_id):
+        raise RuntimeError("Presenter workspace source directory has no concrete ID")
+    perms_args = ["workspace", "get-permissions", "directories", str(object_id)]
+    current_perms = run_cli(target.profile, perms_args)
+    if not _workspace_can_read(current_perms, principal):
+        assert_safe_mutation(target, "workspace directory", target.presenter_app_name)
+        run_cli(
+            target.profile,
+            ["workspace", "update-permissions", "directories", str(object_id)],
+            {
+                "access_control_list": [{
+                    "service_principal_name": principal,
+                    "permission_level": "CAN_READ",
+                }]
+            },
+        )
+    effective_perms = run_cli(target.profile, perms_args)
+    if not _workspace_can_read(effective_perms, principal):
+        raise RuntimeError("Presenter SP cannot read its workspace source after update")
+
+
+def _deploy_presenter_app(
+    target: TargetConfig,
+    app_id: str,
+    principal: str,
+    workspace_path: str,
+    run_cli: RunCli,
+    verify_profile: VerifyProfile,
+    workspace_id_provider: WorkspaceIdProvider,
+    waiter: Waiter,
+) -> tuple[dict[str, Any], str, str, str]:
+    """Deploy the presenter app. Returns (deployed_app, deployment_state, app_state, compute_state)."""
+    _assert_target_binding(target, verify_profile, workspace_id_provider)
+    pre = run_cli(target.profile, ["apps", "get", target.presenter_app_name])
+    if (
+        not isinstance(pre, dict)
+        or pre.get("id") != app_id
+        or pre.get("service_principal_client_id") != principal
+    ):
+        raise RuntimeError("Presenter app identity changed before deployment")
+    assert_safe_mutation(target, "app", target.presenter_app_name)
+    deploy_response = run_cli(
+        target.profile,
+        ["apps", "deploy", target.presenter_app_name, "--source-code-path", workspace_path],
+    )
+    if not isinstance(deploy_response, dict):
+        raise RuntimeError("Presenter app deployment response is malformed")
+    deployment_id = _deployment_id(deploy_response)
+    deployment: dict[str, Any] = {}
+    for attempt in range(120):
+        current = run_cli(
+            target.profile,
+            ["apps", "get-deployment", target.presenter_app_name, deployment_id],
+        )
+        if not isinstance(current, dict):
+            raise RuntimeError("Presenter deployment readback is malformed")
+        if _deployment_id(current) != deployment_id or current.get("source_code_path") != workspace_path:
+            raise RuntimeError("Presenter deployment readback escaped its exact source")
+        deployment = current
+        state = _status_state(current.get("status"), "deployment")
+        if state == "SUCCEEDED":
+            break
+        if state in {"FAILED", "CANCELLED", "ERROR"}:
+            raise RuntimeError("Presenter app deployment did not succeed")
+        if attempt < 119:
+            waiter(2.0)
+    else:
+        raise RuntimeError("Presenter app deployment did not reach SUCCEEDED")
+    deployed = run_cli(target.profile, ["apps", "get", target.presenter_app_name])
+    if (
+        not isinstance(deployed, dict)
+        or deployed.get("id") != app_id
+        or deployed.get("service_principal_client_id") != principal
+    ):
+        raise RuntimeError("Presenter app identity changed after deployment")
+    dep_state = _status_state(deployment.get("status"), "deployment")
+    app_state = _status_state(deployed.get("app_status"), "application")
+    compute_state = _status_state(deployed.get("compute_status"), "compute")
+    if (dep_state, app_state, compute_state) != ("SUCCEEDED", "RUNNING", "ACTIVE"):
+        raise RuntimeError("Presenter app did not reach the required states after deployment")
+    return dict(deployed), dep_state, app_state, compute_state
+
+
+def build_presenter_deployment_plan(
+    *,
+    run_cli: RunCli = run_json,
+    verify_profile: VerifyProfile = assert_profile,
+    workspace_id_provider: WorkspaceIdProvider = _workspace_id_from_sdk,
+    state_path: Path | None = None,
+) -> PresenterDeploymentPlan:
+    """Inspect and plan the field-eng presenter app deployment (dry-run, read-only)."""
+    target = load_target("field_eng")
+    _require_target_contract(target)
+    verify_profile(target.profile, target.host)
+    workspace_id_provider(target.profile)
+    output_path = state_path or ROOT / "deploy" / "state" / "field_eng.json"
+    generated_state = _read_generated_state(output_path)
+    apps_response = run_cli(target.profile, ["apps", "list"])
+    existing = {app.get("name") for app in _records(apps_response, "apps", "apps")}
+    current_app: dict[str, Any] | None = None
+    if target.presenter_app_name in existing:
+        current_app = dict(run_cli(target.profile, ["apps", "get", target.presenter_app_name]))
+    grants = (
+        McpGrant(
+            securable_type="catalog",
+            full_name=FIELD_CATALOG,
+            privileges=frozenset({"USE_CATALOG"}),
+        ),
+        McpGrant(
+            securable_type="schema",
+            full_name=f"{FIELD_CATALOG}.{FIELD_TRACE_SCHEMA}",
+            privileges=frozenset({"USE_SCHEMA", "CREATE_TABLE"}),
+        ),
+    )
+    return PresenterDeploymentPlan(
+        target=target,
+        app_name=target.presenter_app_name,
+        workspace_path=PRESENTER_WORKSPACE_PATH,
+        scopes=PRESENTER_SCOPES,
+        grants=grants,
+        generated_state=generated_state,
+        current_app=current_app,
+    )
+
+
+def apply_presenter_deployment_plan(
+    plan: PresenterDeploymentPlan,
+    *,
+    run_cli: RunCli = run_json,
+    verify_profile: VerifyProfile = assert_profile,
+    workspace_id_provider: WorkspaceIdProvider = _workspace_id_from_sdk,
+    state_path: Path | None = None,
+    sync_runner: SyncRunner = _default_sync_runner,
+    lakebase_access_reconciler: Callable[[dict[str, Any]], dict[str, Any]] | None = None,
+    app_invoker: Callable[[str, str, dict[str, Any]], dict[str, Any]] | None = None,
+    trace_proof_provider: Callable[[dict[str, Any]], dict[str, Any]] | None = None,
+    session_id_provider: Callable[[], str] = lambda: uuid.uuid4().hex,
+    now_ms: Callable[[], int] = lambda: int(time.time() * 1000),
+    waiter: Waiter = time.sleep,
+) -> PresenterDeploymentEvidence:
+    """Reconcile, deploy, and live-validate the field-eng presenter app."""
+    target = plan.target
+    _require_target_contract(target)
+    output_path = state_path or ROOT / "deploy" / "state" / "field_eng.json"
+
+    # Step 1: Create or reuse the presenter app
+    app, _created = _ensure_presenter_app_created(
+        target, run_cli, verify_profile, workspace_id_provider
+    )
+    app_id: str = app["id"]
+    principal: str = app["service_principal_client_id"]
+
+    # Step 2: Reconcile OBO scopes
+    app = _ensure_presenter_scopes_set(
+        target, app_id, principal, run_cli, verify_profile, workspace_id_provider
+    )
+
+    # Step 3: Reconcile UC grants
+    for grant in plan.grants:
+        _ensure_presenter_uc_grant(
+            target, app_id, principal, grant, run_cli, verify_profile, workspace_id_provider
+        )
+
+    # Step 4: Lakebase access proof
+    lakebase_proof_result: dict[str, Any] = {}
+    if lakebase_access_reconciler is not None:
+        lakebase_proof_result = lakebase_access_reconciler({"app": dict(app)})
+        _validate_lakebase_access_proof(principal, lakebase_proof_result)
+
+    # Step 5: Persist state with presenter metadata before render
+    existing_state = _read_generated_state(output_path)
+    experiment_name = f"/Users/{principal}/gurary_bobabricks_store_ops_uc"
+    updated_state = dict(existing_state)
+    updated_state["presenter_app_id"] = app_id
+    updated_state["presenter_app_url"] = app["url"]
+    updated_state["presenter_service_principal_client_id"] = principal
+    updated_state["mlflow_experiment_name"] = experiment_name
+    _write_json_atomic(output_path, updated_state)
+
+    # Step 6: Render baseline (reads from state file written above)
+    from deploy.render import render_deployment
+    build_path = render_deployment("field_eng", "baseline")
+
+    # Step 7: Sync rendered source to owned workspace path
+    _sync_presenter_baseline(
+        target, plan.workspace_path, build_path,
+        run_cli, verify_profile, workspace_id_provider, sync_runner,
+    )
+
+    # Step 8: Ensure SP can read the synced workspace directory
+    _ensure_presenter_workspace_readable(
+        target, principal, plan.workspace_path,
+        run_cli, verify_profile, workspace_id_provider,
+    )
+
+    # Step 9: Deploy and wait for SUCCEEDED
+    deployed, dep_state, app_state, compute_state = _deploy_presenter_app(
+        target, app_id, principal, plan.workspace_path,
+        run_cli, verify_profile, workspace_id_provider, waiter,
+    )
+
+    # Step 10: Four-turn baseline acceptance
+    session_id = session_id_provider()
+    if not isinstance(session_id, str) or not session_id or "\x00" in session_id:
+        raise RuntimeError("Presenter acceptance session identifier is invalid")
+    app_url: str = deployed["url"]
+    started_at_ms = now_ms()
+    trace_table_count = 0
+    trace_location = f"{FIELD_CATALOG}.{FIELD_TRACE_SCHEMA}.{TRACE_TABLE_PREFIX}"
+
+    for turn_index, prompt in enumerate(PRESENTER_PROMPTS):
+        payload: dict[str, Any] = {
+            "input": [{"role": "user", "content": prompt}],
+            "custom_inputs": {"session_id": session_id},
+        }
+        if app_invoker is not None:
+            invocation = app_invoker(target.profile, app_url, payload)
+            output = invocation.get("output") if isinstance(invocation, dict) else None
+            if not isinstance(output, list) or not output:
+                raise RuntimeError("Presenter acceptance invocation returned no output")
+        if trace_proof_provider is not None:
+            trace_request: dict[str, Any] = {
+                "experiment_name": experiment_name,
+                "trace_location": trace_location,
+                "session_id": session_id,
+                "not_before_ms": started_at_ms,
+                "turn_index": turn_index,
+                "generated_state": updated_state,
+            }
+            proof = trace_proof_provider(trace_request)
+            _validate_presenter_trace_proof(trace_request, proof)
+            uc_tables = proof.get("uc_tables", []) if isinstance(proof, dict) else []
+            if isinstance(uc_tables, list):
+                trace_table_count = len(uc_tables)
+
+    # Step 11: OpsTask read-only baseline count
+    ops_table = (
+        f"`{FIELD_CATALOG}`.`{FIELD_DATA_SCHEMA}`.`{FIELD_TABLE_PREFIX}{MCP_OPSTASK_TABLE}`"
+    )
+    warehouse_id = str(updated_state.get("warehouse_id", ""))
+    ops_rows = _run_statement(
+        run_cli, target, warehouse_id,
+        f"SELECT task_id FROM {ops_table}",
+        waiter,
+    )
+    ops_baseline_count = len(ops_rows)
+
+    lakebase_schema = (
+        str(lakebase_proof_result.get("schema", ""))
+        if isinstance(lakebase_proof_result, dict)
+        else ""
+    )
+
+    return PresenterDeploymentEvidence(
+        deployment_state=dep_state,
+        app_state=app_state,
+        compute_state=compute_state,
+        prompt_count=len(PRESENTER_PROMPTS),
+        trace_table_count=trace_table_count,
+        ops_baseline_count=ops_baseline_count,
+        lakebase_schema=lakebase_schema,
     )
 
 

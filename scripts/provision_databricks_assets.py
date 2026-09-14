@@ -15,15 +15,15 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from deploy.config import load_target
-from deploy.databricks_cli import assert_profile, run_json
+from deploy.databricks_cli import assert_profile, live_workspace_id, run_json
 
 
 IDENTIFIER = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
 TABLE_REFERENCE = re.compile(
     r"\b([A-Za-z_][A-Za-z0-9_]*\.[A-Za-z_][A-Za-z0-9_]*\.[A-Za-z_][A-Za-z0-9_]*)\b"
 )
-FIELD_PROFILE = "e2-demo-field-eng"
-FIELD_WORKSPACE_ID = "1444828305810485"
+FIELD_PROFILE = "dogfood-vs"
+FIELD_WORKSPACE_ID = "715783009495722"
 FIELD_WAREHOUSE_NAME = "gurary_bobabricks_" "warehouse"
 FIELD_CATALOG = "gurary_" "catalog"
 FIELD_SCHEMA = "gurary_bobabricks_store_" "ops"
@@ -71,9 +71,7 @@ def run_databricks(profile: str, args: list[str], payload: dict | None = None) -
 
 
 def _workspace_id_from_sdk(profile: str) -> str:
-    from databricks.sdk import WorkspaceClient
-
-    return str(WorkspaceClient(profile=profile).get_workspace_id())
+    return live_workspace_id(profile)
 
 
 def _records(response: dict | list, key: str) -> list[dict]:

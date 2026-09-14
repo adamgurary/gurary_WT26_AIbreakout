@@ -12,7 +12,7 @@ from deploy.safety import (
 class ConfigSafetyTest(unittest.TestCase):
     def test_known_targets_have_expected_hosts(self):
         self.assertEqual(load_target("fevm").host, "https://fevm-worldtour-ai.cloud.databricks.com")
-        self.assertEqual(load_target("field_eng").workspace_id, "1444828305810485")
+        self.assertEqual(load_target("field_eng").workspace_id, "715783009495722")
 
     def test_created_names_must_be_gurary_namespaced(self):
         for name in ["gurary_table", "gurary-bobabricks-store-ops"]:

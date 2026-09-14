@@ -25,8 +25,8 @@ EXPECTED_COUNTS = {
     "ops_tasks": 4,
     "store_metrics": 14,
 }
-PROFILE = "e2-demo-field-eng"
-WORKSPACE_ID = "1444828305810485"
+PROFILE = "dogfood-vs"
+WORKSPACE_ID = "715783009495722"
 WAREHOUSE_NAME = "gurary_bobabricks_" "warehouse"
 CATALOG = "gurary_" "catalog"
 DATA_SCHEMA = "gurary_bobabricks_store_" "ops"

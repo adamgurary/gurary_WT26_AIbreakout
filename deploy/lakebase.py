@@ -21,7 +21,7 @@ from databricks.sdk.service.postgres import (
 )
 
 from .config import TargetConfig
-from .databricks_cli import REQUIRED_USER, assert_profile, normalize_host
+from .databricks_cli import REQUIRED_USER, assert_profile, live_workspace_id, normalize_host
 from .safety import assert_safe_mutation
 
 
@@ -31,9 +31,9 @@ ENDPOINT_ID = "primary"
 DATABASE_ID = "databricks_postgres"
 DATABASE_RESOURCE_ID = "databricks-postgres"
 SCHEMA_ID = "gurary_bobabricks_app"
-FIELD_PROFILE = "e2-demo-field-eng"
-FIELD_HOST = "https://e2-demo-field-eng.cloud.databricks.com"
-FIELD_WORKSPACE_ID = "1444828305810485"
+FIELD_PROFILE = "dogfood-vs"
+FIELD_HOST = "https://dogfood.staging.databricks.com"
+FIELD_WORKSPACE_ID = "715783009495722"
 PROJECT_NAME = f"projects/{PROJECT_ID}"
 BRANCH_NAME = f"{PROJECT_NAME}/branches/{BRANCH_ID}"
 ENDPOINT_NAME = f"{BRANCH_NAME}/endpoints/{ENDPOINT_ID}"
@@ -108,7 +108,7 @@ def _assert_binding(workspace: WorkspaceClient, target: TargetConfig) -> str:
     actual_host = getattr(getattr(workspace, "config", None), "host", None)
     if normalize_host(actual_host) != normalize_host(target.host):
         raise RuntimeError("Lakebase SDK client host does not match the field-eng target")
-    if str(workspace.get_workspace_id()) != target.workspace_id:
+    if live_workspace_id(target.profile) != target.workspace_id:
         raise RuntimeError("Lakebase SDK workspace ID does not match the field-eng target")
     return user_name
 

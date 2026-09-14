@@ -1,7 +1,8 @@
 key: field_eng
-profile: e2-demo-field-eng
-host: https://e2-demo-field-eng.cloud.databricks.com
-workspace_id: "1444828305810485"
+profile: dogfood-vs
+host: https://dogfood.staging.databricks.com
+workspace_id: "715783009495722"
+apps_domain: staging.aws.databricksapps.com
 presenter_app_name: gurary-bobabricks-store-ops
 catalog: gurary_catalog
 data_schema: gurary_bobabricks_store_ops

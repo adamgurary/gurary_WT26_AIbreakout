@@ -212,7 +212,7 @@ def _require_identifier(value: Any, field: str) -> str:
 
 
 def _app_url(app_name: str, target: TargetConfig) -> str:
-    return f"https://{app_name}-{target.workspace_id}.aws.databricksapps.com"
+    return f"https://{app_name}-{target.workspace_id}.{target.apps_domain}"
 
 
 def _mcp_url(app_name: str, target: TargetConfig) -> str:

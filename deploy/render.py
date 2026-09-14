@@ -391,6 +391,10 @@ def _ignored_names(directory: Path, names: list[str]) -> set[str]:
     ignored = {name for name in names if name in {".git", ".build", ".venv", ".superpowers", "__pycache__", ".pytest_cache"}}
     if relative == Path("deploy"):
         ignored.update({"state", "inventory"})
+    if relative == Path("."):
+        # Operational doc: intentionally references both lanes' identifiers, so
+        # it is excluded from the deployed build rather than scanned/exempted.
+        ignored.update({"RUNBOOK_GURARY.md"})
     return ignored
 
 

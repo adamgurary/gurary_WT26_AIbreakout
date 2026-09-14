@@ -1,0 +1,102 @@
+{
+  "target_key": "field_eng",
+  "expected_state": "baseline",
+  "session_id": "3926983c-6b7d-49a1-a2f2-2e9c6e0f65b9",
+  "timestamp": "2026-09-14T05:56:32.645127+00:00",
+  "go": false,
+  "checks": [
+    {
+      "name": "workspace_identity",
+      "status": "PASS",
+      "evidence": {
+        "workspace_id": "715783009495722"
+      },
+      "error": "",
+      "timestamp": "2026-09-14T05:56:35.238406+00:00"
+    },
+    {
+      "name": "resource_namespace",
+      "status": "PASS",
+      "evidence": {
+        "checked_names": [
+          "gurary-bobabricks-store-ops",
+          "gurary-bobabricks-storetime",
+          "gurary-bobabricks-opstask-mcp"
+        ]
+      },
+      "error": "",
+      "timestamp": "2026-09-14T05:56:35.238445+00:00"
+    },
+    {
+      "name": "app_running",
+      "status": "PASS",
+      "evidence": {
+        "app_name": "gurary-bobabricks-store-ops",
+        "app_state": "RUNNING"
+      },
+      "error": "",
+      "timestamp": "2026-09-14T05:56:36.148696+00:00"
+    },
+    {
+      "name": "mcp_initialize",
+      "status": "N/A",
+      "evidence": {
+        "note": "no MCP URLs configured for this target"
+      },
+      "error": "",
+      "timestamp": "2026-09-14T05:56:36.149022+00:00"
+    },
+    {
+      "name": "mcp_tools_list",
+      "status": "N/A",
+      "evidence": {
+        "note": "no MCP URLs configured for this target"
+      },
+      "error": "",
+      "timestamp": "2026-09-14T05:56:36.149050+00:00"
+    },
+    {
+      "name": "baseline_or_upgraded_contract",
+      "status": "N/A",
+      "evidence": {
+        "note": "no MCP URLs configured; contract check skipped"
+      },
+      "error": "",
+      "timestamp": "2026-09-14T05:56:36.149066+00:00"
+    },
+    {
+      "name": "lakebase_session",
+      "status": "N/A",
+      "evidence": {
+        "note": "no lakebase_session_provider injected"
+      },
+      "error": "",
+      "timestamp": "2026-09-14T05:56:36.149089+00:00"
+    },
+    {
+      "name": "successful_tool_spans",
+      "status": "FAIL",
+      "evidence": {},
+      "error": "Fresh presenter trace and spans were not readable within the deadline",
+      "timestamp": "2026-09-14T05:58:38.731168+00:00"
+    },
+    {
+      "name": "confluence_live_grounding",
+      "status": "N/A",
+      "evidence": {
+        "note": "confluence_enabled is false for baseline"
+      },
+      "error": "",
+      "timestamp": "2026-09-14T05:58:38.731271+00:00"
+    },
+    {
+      "name": "fevm_shared_ops_unchanged",
+      "status": "N/A",
+      "evidence": {
+        "note": "only checked for fevm target"
+      },
+      "error": "",
+      "timestamp": "2026-09-14T05:58:38.731299+00:00"
+    }
+  ]
+}

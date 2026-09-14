@@ -39,6 +39,13 @@ REQUIRED_TEXT = {
     ],
     "agent-store-ops/mcp_servers.yaml": [
         "INVENTORY_APP_MCP_ENABLED:-false",
+        # Upgrade: managed Atlassian/Confluence MCP block must be present
+        "managed_external_mcp",
+        "system_ai_agent_atlassian_mcp",
+    ],
+    "agent-store-ops/tools.yaml": [
+        # Upgrade: exactly one search_confluence tool must be present
+        "search_confluence",
     ],
     "app/services/store_ops.py": [
         "class StoreOpsEngine",
@@ -57,25 +64,12 @@ FORBIDDEN_TEXT = {
         "Inventory MCP",
     ],
     "agent-store-ops/mcp_servers.yaml": [
+        # managed_atlassian_mcp was the old long-version key; the upgrade uses
+        # managed_external_mcp with connection system_ai_agent_atlassian_mcp instead.
         "managed_atlassian_mcp",
-        "CONFLUENCE_MCP_ENABLED",
-        "ATLASSIAN_MCP_URL",
-    ],
-    "agent-store-ops/tools.yaml": [
-        "search_confluence",
     ],
     "app/app.yaml": [
         "Generate Weekly Regional Briefing",
-        "CONFLUENCE_MCP_ENABLED",
-        "ATLASSIAN_MCP_URL",
-    ],
-    "app.yml": [
-        "CONFLUENCE_MCP_ENABLED",
-        "ATLASSIAN_MCP_URL",
-    ],
-    "app.yaml": [
-        "CONFLUENCE_MCP_ENABLED",
-        "ATLASSIAN_MCP_URL",
     ],
 }
 

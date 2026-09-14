@@ -1,0 +1,25 @@
+For the Bobabricks store operations agent, add our FY26 goals and store playbooks as context.
+
+Please:
+1. Add the managed Atlassian Confluence MCP to `agent-store-ops/mcp_servers.yaml` so the agent can pull FY26 goals and store operating playbooks directly from Confluence. Use connection name `system_ai_agent_atlassian_mcp`. The URL is derived from the selected target host as `{host}/api/2.0/mcp/external/system_ai_agent_atlassian_mcp` — do NOT hardcode a workspace-specific host.
+2. Add exactly one new tool in `agent-store-ops/tools.yaml`: `search_confluence`, backed by the new Confluence MCP.
+3. Add the app env needed to enable the connector: `CONFLUENCE_MCP_ENABLED=true` and `ATLASSIAN_MCP_URL`. Read `BOBABRICKS_TARGET` from the environment to select the correct target (`fevm` or `field_eng`) and render the URL for that target.
+4. Preserve the existing baseline capabilities (Genie, StoreTime, OpsTask, and Lakebase sidebar context) exactly as they are.
+5. Before redeploying, stop and ask for explicit approval with this wording: `Approve redeploying gurary-bobabricks-store-ops with the Confluence upgrade in the selected workspace?`
+6. Redeploy only `gurary-bobabricks-store-ops`. Do not redeploy any other app.
+7. After redeploying, check deployment status and verify the app is running. Check the trace status to confirm the Confluence MCP connected. Do not read app logs unless the deployment fails or the app does not start.
+
+Deployment guardrails:
+- Do not run `databricks apps deploy --auto-approve`.
+- Always use the app name `gurary-bobabricks-store-ops`.
+- Do not use `--source-code-path .` or `source_code_path: "."`.
+- Do not deploy the `app/` directory; this demo deploys the repo-root chat app defined by root `app.yml` / `app.yaml`.
+- Use the profile matching the selected target — never `DEFAULT`.
+
+After changes, show:
+- the key diff summary (managed Atlassian/Confluence MCP added, one `search_confluence` tool added, app env enabled),
+- the redeploy approval request and the approval result,
+- the deployed status,
+- and confirm this query now answers fully: `What are our FY26 training goals, and how does Store 104 stack up?`
+
+This is the short-demo upgrade: one tool added on purpose. The larger upgrade (inventory risk, risk classification, weekly regional briefing, approval-gated OpsTask creation, and the scheduled workflow) is captured separately in archive/long-version/CODEX_UPGRADE_PROMPT.txt.

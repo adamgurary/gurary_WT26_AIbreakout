@@ -19,3 +19,8 @@ tools:
     purpose: Create follow-up tickets for approved high-severity risks.
     read_only: false
     requires_user_approval: true
+
+  - name: search_confluence
+    server: atlassian_confluence
+    purpose: Search Confluence for FY26 goals, store playbooks, and operational knowledge-base pages.
+    read_only: true

@@ -40,3 +40,11 @@ mcp_servers:
         inventory: ${DATABRICKS_CATALOG:-bobabricks_demo}.${DATABRICKS_SCHEMA:-store_ops}.inventory
     notes: >-
       Disabled for the short demo: Inventory is never surfaced as its own tool. The app code lives in mcp-apps/inventory and can be re-enabled with INVENTORY_APP_MCP_ENABLED=true for the long version (see archive/long-version/). Genie remains the governed analytics path for inventory facts.
+
+  atlassian_confluence:
+    type: managed_external_mcp
+    enabled: ${CONFLUENCE_MCP_ENABLED:-false}
+    description: Managed Atlassian/Confluence MCP for FY26 goals, store playbooks, and knowledge-base pages.
+    config:
+      connection: system_ai_agent_atlassian_mcp
+      url: ${ATLASSIAN_MCP_URL}

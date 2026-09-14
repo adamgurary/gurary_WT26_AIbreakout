@@ -13,8 +13,8 @@ from unittest.mock import patch
 import yaml
 
 
-PROFILE = "dogfood-vs"
-HOST = "https://dogfood.staging.databricks.com"
+PROFILE = "dbc-f7444b38"
+HOST = "https://dbc-f7444b38-7453.staging.cloud.databricks.com"
 WORKSPACE_ID = "715783009495722"
 CATALOG = "gurary_" "catalog"
 SCHEMA = "gurary_bobabricks_store_" "ops"

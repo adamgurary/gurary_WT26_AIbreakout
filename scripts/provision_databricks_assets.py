@@ -22,7 +22,7 @@ IDENTIFIER = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
 TABLE_REFERENCE = re.compile(
     r"\b([A-Za-z_][A-Za-z0-9_]*\.[A-Za-z_][A-Za-z0-9_]*\.[A-Za-z_][A-Za-z0-9_]*)\b"
 )
-FIELD_PROFILE = "dogfood-vs"
+FIELD_PROFILE = "dbc-f7444b38"
 FIELD_WORKSPACE_ID = "715783009495722"
 FIELD_WAREHOUSE_NAME = "gurary_bobabricks_" "warehouse"
 FIELD_CATALOG = "gurary_" "catalog"

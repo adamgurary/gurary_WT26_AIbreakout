@@ -1,6 +1,6 @@
 key: field_eng
-profile: dogfood-vs
-host: https://dogfood.staging.databricks.com
+profile: dbc-f7444b38
+host: https://dbc-f7444b38-7453.staging.cloud.databricks.com
 workspace_id: "715783009495722"
 apps_domain: staging.aws.databricksapps.com
 presenter_app_name: gurary-bobabricks-store-ops

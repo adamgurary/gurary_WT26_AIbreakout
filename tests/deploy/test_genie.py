@@ -322,7 +322,7 @@ class TargetBoundary:
         raise AssertionError(f"unexpected target call: {args}, {payload}")
 
     def assert_profile(self, profile):
-        if profile != "dogfood-vs":
+        if profile != "dbc-f7444b38":
             raise AssertionError(f"unexpected profile: {profile}")
 
 

@@ -304,7 +304,7 @@ class ProvisioningIsolationTest(unittest.TestCase):
         argv = [
             "provision_databricks_assets.py",
             "--profile",
-            "dogfood-" "vs",
+            "dbc-f7444b38",
             "--warehouse-id",
             "warehouse-id",
             "--catalog",

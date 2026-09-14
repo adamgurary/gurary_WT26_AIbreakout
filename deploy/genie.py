@@ -34,8 +34,8 @@ SOURCE_TABLE_NAMES = (
     "ops_tasks",
     "store_metrics",
 )
-FIELD_PROFILE = "dogfood-vs"
-FIELD_HOST = "https://dogfood.staging.databricks.com"
+FIELD_PROFILE = "dbc-f7444b38"
+FIELD_HOST = "https://dbc-f7444b38-7453.staging.cloud.databricks.com"
 FIELD_WORKSPACE_ID = "715783009495722"
 FIELD_WAREHOUSE_NAME = "gurary_bobabricks_" "warehouse"
 FIELD_SPACE_NAME = "gurary_bobabricks_store_" "operations"

@@ -25,7 +25,7 @@ EXPECTED_COUNTS = {
     "ops_tasks": 4,
     "store_metrics": 14,
 }
-PROFILE = "dogfood-vs"
+PROFILE = "dbc-f7444b38"
 WORKSPACE_ID = "715783009495722"
 WAREHOUSE_NAME = "gurary_bobabricks_" "warehouse"
 CATALOG = "gurary_" "catalog"

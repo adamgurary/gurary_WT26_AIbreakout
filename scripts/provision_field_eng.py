@@ -44,8 +44,8 @@ EXPECTED_COUNTS = {
     "store_metrics": 14,
 }
 TABLE_NAMES = tuple(EXPECTED_COUNTS)
-FIELD_PROFILE = "dogfood-vs"
-FIELD_HOST = "https://dogfood.staging.databricks.com"
+FIELD_PROFILE = "dbc-f7444b38"
+FIELD_HOST = "https://dbc-f7444b38-7453.staging.cloud.databricks.com"
 FIELD_WORKSPACE_ID = "715783009495722"
 FIELD_WAREHOUSE_NAME = "gurary_bobabricks_" "warehouse"
 FIELD_CATALOG = "gurary_" "catalog"
@@ -2470,6 +2470,8 @@ def _parse_arguments(argv: list[str] | None = None) -> argparse.Namespace:
     mode.add_argument("--apply", action="store_true")
     mode.add_argument("--dry-run-mcp", action="store_true")
     mode.add_argument("--apply-mcp", action="store_true")
+    mode.add_argument("--dry-run-presenter", action="store_true")
+    mode.add_argument("--apply-presenter", action="store_true")
     return parser.parse_args(argv)
 
 
@@ -2480,6 +2482,11 @@ def main() -> None:
     elif arguments.apply_mcp:
         mcp_plan = build_mcp_deployment_plan()
         result = apply_mcp_deployment_plan(mcp_plan).as_dict()
+    elif arguments.dry_run_presenter:
+        result = build_presenter_deployment_plan().as_dict()
+    elif arguments.apply_presenter:
+        presenter_plan = build_presenter_deployment_plan()
+        result = apply_presenter_deployment_plan(presenter_plan).as_dict()
     elif arguments.dry_run:
         plan = build_provision_plan()
         result = plan.as_dict()

@@ -13,9 +13,9 @@ class LiveWorkspaceIdTest(unittest.TestCase):
         with patch("databricks.sdk.core.Config", return_value=mock_config) as MockConfig:
             from deploy.databricks_cli import live_workspace_id
 
-            result = live_workspace_id("dogfood-vs")
+            result = live_workspace_id("dbc-f7444b38")
 
-        MockConfig.assert_called_once_with(profile="dogfood-vs")
+        MockConfig.assert_called_once_with(profile="dbc-f7444b38")
         self.assertEqual(result, "715783009495722")
 
     def test_raises_when_no_workspace_id_configured(self):

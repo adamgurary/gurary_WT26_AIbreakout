@@ -645,7 +645,13 @@ def validate_stack(
         workspace_id_provider = _live_wid  # type: ignore[assignment]
 
     if app_state_provider is None:
-        from scripts.provision_field_eng import _default_app_state_provider  # type: ignore[attr-defined]
+        from deploy.databricks_cli import run_json as _run_json
+
+        def _default_app_state_provider(profile: str, app_name: str) -> str:
+            app = _run_json(profile, ["apps", "get", app_name])
+            status = app.get("app_status") if isinstance(app, dict) else None
+            state = status.get("state") if isinstance(status, dict) else status
+            return str(state) if state else "UNKNOWN"
 
         app_state_provider = _default_app_state_provider
 

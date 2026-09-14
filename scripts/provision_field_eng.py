@@ -25,7 +25,15 @@ if str(ROOT) not in sys.path:
 
 from deploy.config import TargetConfig, load_target
 from deploy.databricks_cli import REQUIRED_USER, assert_profile, live_workspace_id, run_json
-from deploy.lakebase import LakebaseState, ensure_lakebase
+from deploy.lakebase import (
+    DATABASE_ID,
+    ENDPOINT_NAME,
+    LakebaseState,
+    SCHEMA_ID as LAKEBASE_SCHEMA_ID,
+    ensure_lakebase,
+    _endpoint_host,
+    _find_endpoint,
+)
 from deploy.safety import assert_safe_mutation
 
 
@@ -1970,6 +1978,258 @@ def apply_mcp_deployment_plan(
     )
 
 
+class TransientPresenterInvocationError(RuntimeError):
+    """The presenter app exists but its ingress is not ready."""
+
+
+def _default_presenter_app_invoker(
+    profile: str,
+    app_url: str,
+    payload: dict[str, Any],
+) -> dict[str, Any]:
+    """POST to /invocations with SDK auth; treat 5xx gateway errors as transient."""
+    import httpx
+    from databricks.sdk import WorkspaceClient
+
+    headers: dict[str, str] = {}
+    try:
+        headers.update(WorkspaceClient(profile=profile).config.authenticate())
+        with httpx.Client(timeout=360.0) as client:
+            response = client.post(
+                f"{app_url.rstrip('/')}/invocations",
+                headers=headers,
+                json=payload,
+            )
+            if response.status_code in {502, 503, 504}:
+                raise TransientPresenterInvocationError("Presenter app ingress is not ready")
+            if response.status_code < 200 or response.status_code >= 300:
+                raise RuntimeError("Presenter app probe invocation failed")
+            result = response.json()
+    except RuntimeError:
+        raise
+    except Exception:
+        raise RuntimeError("Presenter app probe invocation failed") from None
+    finally:
+        headers.clear()
+    if not isinstance(result, dict):
+        raise RuntimeError("Presenter app probe invocation returned a malformed response")
+    return result
+
+
+def _invoke_presenter_when_ready(
+    app_invoker: Callable[[str, str, dict[str, Any]], dict[str, Any]],
+    profile: str,
+    app_url: str,
+    payload: dict[str, Any],
+    waiter: Waiter,
+    before_attempt: Callable[[], None],
+) -> dict[str, Any]:
+    for attempt in range(4):
+        try:
+            before_attempt()
+            return app_invoker(profile, app_url, payload)
+        except TransientPresenterInvocationError:
+            if attempt == 3:
+                raise RuntimeError("Presenter app probe invocation failed after readiness wait") from None
+            waiter(2.0 * (2**attempt))
+    raise RuntimeError("Presenter app probe invocation failed after readiness wait")
+
+
+def _trace_state_name_presenter(value: Any) -> str:
+    state = getattr(value, "value", value)
+    return str(state)
+
+
+def _default_presenter_trace_proof_provider(request: dict[str, Any]) -> dict[str, Any]:
+    """Poll the private UC trace location until the probe trace and spans are readable.
+
+    The trace_request does not carry profile/warehouse_id — they are resolved
+    from the field_eng target and generated_state at call time.
+    """
+    from mlflow import MlflowClient
+
+    target = load_target("field_eng")
+    profile = target.profile
+    generated_state = request.get("generated_state") or {}
+    warehouse_id = str(generated_state.get("warehouse_id", ""))
+    experiment_name = request["experiment_name"]
+    trace_location = request["trace_location"]
+    session_id = request["session_id"]
+    not_before_ms = request["not_before_ms"]
+
+    client = MlflowClient(tracking_uri=f"databricks://{profile}")
+    deadline = time.monotonic() + 120.0
+    previous_warehouse_id = os.environ.get("MLFLOW_TRACING_SQL_WAREHOUSE_ID")
+    previous_warehouse_auto_start = os.environ.get("MLFLOW_SQL_WAREHOUSE_AUTO_START")
+    if warehouse_id:
+        os.environ["MLFLOW_TRACING_SQL_WAREHOUSE_ID"] = warehouse_id
+    os.environ["MLFLOW_SQL_WAREHOUSE_AUTO_START"] = "false"
+    try:
+        while time.monotonic() < deadline:
+            try:
+                experiment = client.get_experiment_by_name(experiment_name)
+                if experiment is None:
+                    time.sleep(2.0)
+                    continue
+                traces = client.search_traces(
+                    locations=[trace_location],
+                    max_results=100,
+                    order_by=["timestamp_ms DESC"],
+                    include_spans=False,
+                )
+                for candidate in traces:
+                    info = candidate.info
+                    metadata = info.trace_metadata
+                    if (
+                        metadata.get("mlflow.trace.session") != session_id
+                        or info.request_time < not_before_ms
+                    ):
+                        continue
+                    trace = client.get_trace(info.trace_id, display=False)
+                    spans = trace.data.spans
+                    if not spans:
+                        continue
+                    exp_tags = dict(experiment.tags)
+                    uc_tables = [
+                        trace_location,
+                        f"{trace_location}_otel_spans",
+                        f"{trace_location}_otel_logs",
+                        f"{trace_location}_otel_annotations",
+                    ]
+                    return {
+                        "experiment_name": experiment.name,
+                        "experiment_tags": exp_tags,
+                        "trace_id": info.trace_id,
+                        "trace_request_time_ms": info.request_time,
+                        "trace_session_id": metadata.get("mlflow.trace.session"),
+                        "trace_state": _trace_state_name_presenter(info.state),
+                        "spans": [
+                            {
+                                "name": str(getattr(span, "name", "")),
+                                "status": _trace_state_name_presenter(getattr(span, "status", "")),
+                            }
+                            for span in spans
+                        ],
+                        "uc_tables": uc_tables,
+                    }
+            except Exception:
+                pass
+            time.sleep(2.0)
+    finally:
+        if previous_warehouse_id is None:
+            os.environ.pop("MLFLOW_TRACING_SQL_WAREHOUSE_ID", None)
+        else:
+            os.environ["MLFLOW_TRACING_SQL_WAREHOUSE_ID"] = previous_warehouse_id
+        if previous_warehouse_auto_start is None:
+            os.environ.pop("MLFLOW_SQL_WAREHOUSE_AUTO_START", None)
+        else:
+            os.environ["MLFLOW_SQL_WAREHOUSE_AUTO_START"] = previous_warehouse_auto_start
+    raise RuntimeError("Fresh presenter trace and spans were not readable within the deadline")
+
+
+def _default_lakebase_access_reconciler(request: dict[str, Any]) -> dict[str, Any]:
+    """Grant the presenter SP access to gurary_bobabricks_app and confirm isolation.
+
+    Connects to the Lakebase endpoint via a short-lived credential (same pattern
+    as deploy.lakebase._ensure_schema).  Credentials stay in memory only.
+
+    Returns a proof dict satisfying _validate_lakebase_access_proof:
+      - outside_schema_privileges is [] (no access beyond LAKEBASE_SCHEMA_ID)
+      - principal, schema keys present
+    """
+    import psycopg
+    from databricks.sdk import WorkspaceClient
+
+    app = request.get("app") if isinstance(request, dict) else None
+    if not isinstance(app, dict):
+        raise RuntimeError("Lakebase reconciler received malformed app dict")
+    sp_client_id = app.get("service_principal_client_id")
+    if not isinstance(sp_client_id, str) or not sp_client_id:
+        raise RuntimeError("Presenter app service_principal_client_id is missing or invalid")
+
+    target = load_target("field_eng")
+    workspace = WorkspaceClient(profile=target.profile)
+    endpoint = _find_endpoint(workspace)
+    if endpoint is None:
+        raise RuntimeError("Lakebase endpoint not found; run ensure_lakebase first")
+    pg_host = _endpoint_host(endpoint)
+    credential = workspace.postgres.generate_database_credential(endpoint=ENDPOINT_NAME)
+    token = getattr(credential, "token", None)
+    if not isinstance(token, str) or not token:
+        raise RuntimeError("Lakebase credential generation did not return an in-memory token")
+
+    identity = assert_profile(target.profile, target.host)
+    current_user_name = (
+        (identity.get("current_user") or {}).get("user_name")
+        or (identity.get("current_user") or {}).get("userName")
+    )
+    if not current_user_name:
+        raise RuntimeError("Could not resolve the Lakebase connection user from the field-eng profile")
+
+    token_copy = str(token)
+    try:
+        with psycopg.connect(
+            host=pg_host,
+            dbname=DATABASE_ID,
+            user=current_user_name,
+            password=token_copy,
+            sslmode="require",
+            connect_timeout=15,
+        ) as conn:
+            with conn.cursor() as cur:
+                # Verify the SP role exists in Postgres
+                cur.execute("SELECT 1 FROM pg_roles WHERE rolname = %s;", (sp_client_id,))
+                if cur.fetchone() is None:
+                    raise RuntimeError(
+                        f"Postgres role for presenter SP {sp_client_id!r} does not exist; "
+                        "the SP must authenticate at least once before grants can be applied"
+                    )
+                # Grant schema USAGE
+                cur.execute(
+                    f"GRANT USAGE ON SCHEMA {LAKEBASE_SCHEMA_ID} TO %s;",
+                    (sp_client_id,),
+                )
+                # Grant table privileges for session tables
+                for table in LAKEBASE_SESSION_TABLES:
+                    privs = ", ".join(sorted(LAKEBASE_TABLE_PRIVILEGES))
+                    cur.execute(
+                        f"GRANT {privs} ON TABLE {LAKEBASE_SCHEMA_ID}.{table} TO %s;",
+                        (sp_client_id,),
+                    )
+                # Grant sequence privileges
+                privs_seq = ", ".join(sorted(LAKEBASE_SEQUENCE_PRIVILEGES))
+                cur.execute(
+                    f"GRANT {privs_seq} ON SEQUENCE {LAKEBASE_SCHEMA_ID}.{LAKEBASE_SESSION_SEQUENCE} TO %s;",
+                    (sp_client_id,),
+                )
+                conn.commit()
+                # Confirm no outside-schema privileges
+                cur.execute(
+                    """
+                    SELECT table_schema || '.' || table_name || ':' || privilege_type
+                    FROM information_schema.role_table_grants
+                    WHERE grantee = %s AND table_schema != %s
+                    UNION ALL
+                    SELECT sequence_schema || '.' || sequence_name || ':' || privilege_type
+                    FROM information_schema.role_usage_grants
+                    WHERE grantee = %s AND object_schema != %s
+                    """,
+                    (sp_client_id, LAKEBASE_SCHEMA_ID, sp_client_id, LAKEBASE_SCHEMA_ID),
+                )
+                outside = [row[0] for row in cur.fetchall()]
+    finally:
+        token_copy = ""  # clear from local scope
+
+    return {
+        "principal": sp_client_id,
+        "schema": LAKEBASE_SCHEMA_ID,
+        "schema_privileges": ["USAGE"],
+        "table_privileges": {t: sorted(LAKEBASE_TABLE_PRIVILEGES) for t in LAKEBASE_SESSION_TABLES},
+        "sequence_privileges": {LAKEBASE_SESSION_SEQUENCE: sorted(LAKEBASE_SEQUENCE_PRIVILEGES)},
+        "outside_schema_privileges": outside,
+    }
+
+
 def _validate_presenter_trace_proof(
     request: dict[str, Any], proof: dict[str, Any]
 ) -> None:
@@ -2264,9 +2524,9 @@ def apply_presenter_deployment_plan(
     workspace_id_provider: WorkspaceIdProvider = _workspace_id_from_sdk,
     state_path: Path | None = None,
     sync_runner: SyncRunner = _default_sync_runner,
-    lakebase_access_reconciler: Callable[[dict[str, Any]], dict[str, Any]] | None = None,
-    app_invoker: Callable[[str, str, dict[str, Any]], dict[str, Any]] | None = None,
-    trace_proof_provider: Callable[[dict[str, Any]], dict[str, Any]] | None = None,
+    lakebase_access_reconciler: Callable[[dict[str, Any]], dict[str, Any]] | None = _default_lakebase_access_reconciler,
+    app_invoker: Callable[[str, str, dict[str, Any]], dict[str, Any]] | None = _default_presenter_app_invoker,
+    trace_proof_provider: Callable[[dict[str, Any]], dict[str, Any]] | None = _default_presenter_trace_proof_provider,
     session_id_provider: Callable[[], str] = lambda: uuid.uuid4().hex,
     now_ms: Callable[[], int] = lambda: int(time.time() * 1000),
     waiter: Waiter = time.sleep,

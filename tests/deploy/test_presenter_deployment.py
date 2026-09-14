@@ -498,3 +498,169 @@ class PresenterApplyTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class DefaultProvidersUnitTest(unittest.TestCase):
+    """Unit tests for the three new default providers (all mocked -- no live calls)."""
+
+    def setUp(self):
+        self.field_eng = importlib.import_module("scripts.provision_field_eng")
+
+    # ── app invoker ──────────────────────────────────────────────────────────
+
+    def test_default_app_invoker_returns_json_on_200(self):
+        invoker = getattr(self.field_eng, "_default_presenter_app_invoker", None)
+        self.assertIsNotNone(invoker, "_default_presenter_app_invoker is missing")
+        import unittest.mock as mock
+        fake_response = mock.MagicMock()
+        fake_response.status_code = 200
+        fake_response.json.return_value = {"output": [{"role": "assistant", "content": "hi"}]}
+        fake_client = mock.MagicMock()
+        fake_client.__enter__ = mock.MagicMock(return_value=fake_client)
+        fake_client.__exit__ = mock.MagicMock(return_value=False)
+        fake_client.post.return_value = fake_response
+        with mock.patch("httpx.Client", return_value=fake_client), \
+             mock.patch("databricks.sdk.WorkspaceClient") as mock_wc:
+            mock_wc.return_value.config.authenticate.return_value = {"Authorization": "Bearer t"}
+            result = invoker("dbc-f7444b38", "https://app.example.com", {"input": []})
+        self.assertEqual(result["output"][0]["content"], "hi")
+
+    def test_default_app_invoker_raises_transient_on_502(self):
+        invoker = getattr(self.field_eng, "_default_presenter_app_invoker", None)
+        self.assertIsNotNone(invoker)
+        TransientError = getattr(self.field_eng, "TransientPresenterInvocationError", None)
+        self.assertIsNotNone(TransientError, "TransientPresenterInvocationError missing")
+        import unittest.mock as mock
+        fake_response = mock.MagicMock()
+        fake_response.status_code = 502
+        fake_client = mock.MagicMock()
+        fake_client.__enter__ = mock.MagicMock(return_value=fake_client)
+        fake_client.__exit__ = mock.MagicMock(return_value=False)
+        fake_client.post.return_value = fake_response
+        with mock.patch("httpx.Client", return_value=fake_client), \
+             mock.patch("databricks.sdk.WorkspaceClient") as mock_wc:
+            mock_wc.return_value.config.authenticate.return_value = {}
+            with self.assertRaises(TransientError):
+                invoker("dbc-f7444b38", "https://app.example.com", {})
+
+    # ── trace proof provider ─────────────────────────────────────────────────
+
+    def test_default_trace_proof_provider_returns_four_tags(self):
+        provider = getattr(self.field_eng, "_default_presenter_trace_proof_provider", None)
+        self.assertIsNotNone(provider, "_default_presenter_trace_proof_provider is missing")
+        import unittest.mock as mock
+        not_before = 1000
+        exp_tags = {
+            "mlflow.experiment.databricksTraceDestinationPath": TRACE_PREFIX,
+            "mlflow.experiment.databricksTraceSpanStorageTable": f"{TRACE_PREFIX}_otel_spans",
+            "mlflow.experiment.databricksTraceLogStorageTable": f"{TRACE_PREFIX}_otel_logs",
+            "mlflow.experiment.databricksTraceAnnotationsTable": f"{TRACE_PREFIX}_otel_annotations",
+        }
+        fake_experiment = mock.MagicMock()
+        fake_experiment.name = EXPERIMENT
+        fake_experiment.tags = exp_tags
+        fake_trace_info = mock.MagicMock()
+        fake_trace_info.trace_id = "t-001"
+        fake_trace_info.request_time = not_before + 5
+        fake_trace_info.trace_metadata = {"mlflow.trace.session": "ses-123"}
+        fake_trace_info.state = "OK"
+        fake_candidate = mock.MagicMock()
+        fake_candidate.info = fake_trace_info
+        fake_span = mock.MagicMock()
+        fake_span.name = "RootSpan"
+        fake_span.status = "OK"
+        fake_trace_obj = mock.MagicMock()
+        fake_trace_obj.data.spans = [fake_span]
+        mock_client = mock.MagicMock()
+        mock_client.get_experiment_by_name.return_value = fake_experiment
+        mock_client.search_traces.return_value = [fake_candidate]
+        mock_client.get_trace.return_value = fake_trace_obj
+        request = {
+            "experiment_name": EXPERIMENT,
+            "trace_location": TRACE_PREFIX,
+            "session_id": "ses-123",
+            "not_before_ms": not_before,
+            "turn_index": 0,
+            "generated_state": {"warehouse_id": WAREHOUSE_ID, "target": "field_eng"},
+        }
+        with mock.patch("mlflow.MlflowClient", return_value=mock_client):
+            proof = provider(request)
+        self.assertEqual(proof["experiment_name"], EXPERIMENT)
+        self.assertIn("mlflow.experiment.databricksTraceLogStorageTable", proof["experiment_tags"])
+        self.assertIn("mlflow.experiment.databricksTraceAnnotationsTable", proof["experiment_tags"])
+        self.assertEqual(len(proof["uc_tables"]), 4)
+        self.assertEqual(proof["trace_id"], "t-001")
+
+    def test_default_trace_proof_provider_raises_when_no_matching_trace(self):
+        provider = getattr(self.field_eng, "_default_presenter_trace_proof_provider", None)
+        self.assertIsNotNone(provider)
+        import unittest.mock as mock
+        request = {
+            "experiment_name": EXPERIMENT,
+            "trace_location": TRACE_PREFIX,
+            "session_id": "ses-999",
+            "not_before_ms": 1000,
+            "turn_index": 0,
+            "generated_state": {},
+        }
+        mock_client = mock.MagicMock()
+        mock_client.get_experiment_by_name.return_value = None  # never found
+        with mock.patch("mlflow.MlflowClient", return_value=mock_client), \
+             mock.patch("time.monotonic", side_effect=[0.0, 200.0]):
+            with mock.patch("time.sleep"):
+                with self.assertRaisesRegex(RuntimeError, "deadline"):
+                    provider(request)
+
+    # ── lakebase access reconciler ───────────────────────────────────────────
+
+    def test_default_lakebase_reconciler_returns_correct_proof_shape(self):
+        reconciler = getattr(self.field_eng, "_default_lakebase_access_reconciler", None)
+        self.assertIsNotNone(reconciler, "_default_lakebase_access_reconciler is missing")
+        import unittest.mock as mock
+        mock_cursor = mock.MagicMock()
+        mock_cursor.__enter__ = mock.MagicMock(return_value=mock_cursor)
+        mock_cursor.__exit__ = mock.MagicMock(return_value=False)
+        # pg_roles check returns a row (role exists)
+        mock_cursor.fetchone.return_value = (1,)
+        mock_cursor.fetchall.return_value = []  # no outside privileges
+        mock_conn = mock.MagicMock()
+        mock_conn.__enter__ = mock.MagicMock(return_value=mock_conn)
+        mock_conn.__exit__ = mock.MagicMock(return_value=False)
+        mock_conn.cursor.return_value = mock_cursor
+        mock_endpoint = mock.MagicMock()
+        mock_endpoint.status.hosts.host = "primary.database.databricks.com"
+        mock_cred = mock.MagicMock()
+        mock_cred.token = "short-lived-token"
+        mock_ws = mock.MagicMock()
+        mock_ws.postgres.generate_database_credential.return_value = mock_cred
+        with mock.patch("scripts.provision_field_eng._find_endpoint", return_value=mock_endpoint), \
+             mock.patch("databricks.sdk.WorkspaceClient", return_value=mock_ws), \
+             mock.patch("scripts.provision_field_eng.assert_profile", return_value={
+                 "host": "https://dbc-f7444b38-7453.staging.cloud.databricks.com",
+                 "current_user": {"userName": "adam.gurary@databricks.com"},
+             }), \
+             mock.patch("psycopg.connect", return_value=mock_conn):
+            proof = reconciler({"app": app_record()})
+        self.assertEqual(proof["schema"], "gurary_bobabricks_app")
+        self.assertEqual(proof["principal"], PRINCIPAL)
+        self.assertEqual(proof["outside_schema_privileges"], [])
+
+    def test_default_lakebase_reconciler_raises_when_endpoint_missing(self):
+        reconciler = getattr(self.field_eng, "_default_lakebase_access_reconciler", None)
+        self.assertIsNotNone(reconciler)
+        import unittest.mock as mock
+        with mock.patch("scripts.provision_field_eng._find_endpoint", return_value=None), \
+             mock.patch("databricks.sdk.WorkspaceClient"):
+            with self.assertRaisesRegex(RuntimeError, "endpoint not found"):
+                reconciler({"app": app_record()})
+
+    def test_apply_presenter_defaults_are_real_functions_not_none(self):
+        """Confirm the three providers have non-None defaults on the live function."""
+        import inspect
+        apply_fn = getattr(self.field_eng, "apply_presenter_deployment_plan", None)
+        self.assertIsNotNone(apply_fn)
+        sig = inspect.signature(apply_fn)
+        for param_name in ("app_invoker", "trace_proof_provider", "lakebase_access_reconciler"):
+            default = sig.parameters[param_name].default
+            self.assertIsNotNone(default, f"{param_name} default must not be None")
+            self.assertTrue(callable(default), f"{param_name} default must be callable")
